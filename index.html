@@ -1556,7 +1556,7 @@
                         setProducts((data.products || []).filter(p => p && String(p).trim() !== ""));
                         setLocations((data.locations || []).filter(l => l && String(l).trim() !== ""));
                         
-                        // Historial: Reciente -> Antiguo (.reverse())
+                        // Historial: Reciente -> Antiguo (.reverse()) - Mantenemos esto para el Historial
                         const newLog = (data.auditLog || []).reverse();
                         setAuditLog(newLog);
                         
@@ -1571,7 +1571,8 @@
                         setIsOnline(false);
                     }
                 } catch (err) { 
-                    console.error(err); 
+                    // Error silencioso para no saturar la consola en caso de fallo de red
+                    // console.error(err); 
                     setIsOnline(false);
                 } finally { 
                     if (!silent) setLoading(false); 
@@ -1832,11 +1833,11 @@
                                 return ( 
                                     <div key={idx} onClick={() => handleLocationClick(loc)} className={`p-4 rounded-lg border shadow-sm flex flex-col gap-1 cursor-pointer ${data ? 'bg-green-50 border-green-200' : 'bg-white'}`}>
                                         <div className="flex justify-between items-center">
-                                            <div className="flex items-center gap-2">
-                                                <span className="font-semibold">{loc}</span>
+                                            <span className="font-semibold">{loc}</span>
+                                            <div className="flex gap-2 items-center">
                                                 <button onClick={(e) => { e.stopPropagation(); goToMapAndFocus(loc); }} className="text-blue-500 p-1 hover:bg-blue-50 rounded" title="Ver en mapa"><Icons.Target /></button>
+                                                {data ? <Icons.CheckCircle className="text-green-600 w-5 h-5" /> : <span className="text-xs text-slate-400">Pendiente</span>}
                                             </div>
-                                            {data ? <Icons.CheckCircle className="text-green-600 w-5 h-5" /> : <span className="text-xs text-slate-400">Pendiente</span>}
                                         </div>
                                         {data && (
                                             <div className="text-sm text-slate-600 flex justify-between border-t border-green-100 pt-2 mt-1">
