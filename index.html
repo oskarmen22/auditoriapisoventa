@@ -14,51 +14,22 @@
     <script src="https://unpkg.com/panzoom@9.4.0/dist/panzoom.min.js"></script>
     <!-- Librería para PDF -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.28/jspdf.plugin.autotable.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
     
     <!-- Estilos adicionales -->
     <style>
-        /* FIX DEFINITIVO PARA ALTURA MÓVIL */
-        html, body {
-            height: 100%;
-            width: 100%;
-            margin: 0;
-            padding: 0;
-            overflow: hidden; 
-        }
-
-        body { 
-            font-family: sans-serif; 
-            background-color: #f8fafc;
-            touch-action: none;
-            height: 100dvh; 
-            min-height: -webkit-fill-available;
-        }
-        
-        #root { 
-            height: 100%; 
-            width: 100%; 
-            display: flex; 
-            flex-direction: column; 
-            overflow: hidden; 
-        }
-        
+        html, body { height: 100%; width: 100%; margin: 0; padding: 0; overflow: hidden; }
+        body { font-family: sans-serif; background-color: #f8fafc; touch-action: none; height: 100dvh; min-height: -webkit-fill-available; }
+        #root { height: 100%; width: 100%; display: flex; flex-direction: column; overflow: hidden; }
         .animate-scale-up { animation: scaleUp 0.2s ease-out; }
         @keyframes scaleUp { from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }
-        
         .resize-handle { width: 20px; height: 20px; background-color: #3b82f6; position: absolute; right: -10px; bottom: -10px; cursor: se-resize; border-radius: 50%; border: 3px solid white; z-index: 20; box-shadow: 0 2px 4px rgba(0,0,0,0.3); }
         .rotate-handle { width: 20px; height: 20px; background-color: #22c55e; position: absolute; left: 50%; top: -25px; transform: translateX(-50%); cursor: grab; border-radius: 50%; border: 3px solid white; z-index: 20; box-shadow: 0 2px 4px rgba(0,0,0,0.3); }
         .rotate-line { position: absolute; left: 50%; top: -25px; height: 25px; width: 2px; background-color: #22c55e; transform: translateX(-50%); pointer-events: none; }
         .group-resize-handle { width: 24px; height: 24px; background-color: #9333ea; position: absolute; right: -12px; bottom: -12px; cursor: se-resize; border-radius: 50%; border: 3px solid white; z-index: 50; box-shadow: 0 2px 4px rgba(0,0,0,0.3); }
-
         .interactive-zone { pointer-events: auto !important; touch-action: none; -webkit-tap-highlight-color: rgba(0,0,0,0); }
-
-        @keyframes pulse-red {
-            0%, 100% { border-color: rgba(239, 68, 68, 0.8); background-color: rgba(239, 68, 68, 0.2); transform: scale(1); }
-            50% { border-color: rgba(239, 68, 68, 1); background-color: rgba(239, 68, 68, 0.5); transform: scale(1.1); }
-        }
+        @keyframes pulse-red { 0%, 100% { border-color: rgba(239, 68, 68, 0.8); background-color: rgba(239, 68, 68, 0.2); transform: scale(1); } 50% { border-color: rgba(239, 68, 68, 1); background-color: rgba(239, 68, 68, 0.5); transform: scale(1.1); } }
         .highlight-zone { animation: pulse-red 1.5s infinite; z-index: 30 !important; }
-        
         .transition-colors-fast { transition: background-color 0.3s ease, border-color 0.3s ease; }
     </style>
 </head>
@@ -95,7 +66,7 @@
         };
 
         // --- URL DEL SCRIPT DE GOOGLE ---
-        const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwT7kaL9bGd2bwetRe2CcIItDmGKypqWGfoGKlQdWpNIUUT2caGRx0_taRmwxGPkmjG/exec"; 
+        const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwMLTd-BD7CSH5zhN9iHZopYSwmIvSIiWCXn0sCHwt6ZLqipbLqRybM8ecDXBPRH4TC/exec"; 
 
         // --- ZONAS INICIALES ---
         const INITIAL_ZONES = [
@@ -1550,30 +1521,48 @@
                 if (!APPS_SCRIPT_URL) return;
                 if (!silent) setLoading(true);
                 try {
-                    const response = await fetch(APPS_SCRIPT_URL);
-                    const data = await response.json();
+                    // console.log("Intentando conectar..."); // Debug connection
+                    
+                    // CAMBIO IMPORTANTE: Added credentials: 'omit' para evitar conflictos CORS con cookies de Google
+                    const response = await fetch(APPS_SCRIPT_URL, {
+                        method: 'GET',
+                        credentials: 'omit',
+                        headers: {
+                            'Content-Type': 'text/plain;charset=utf-8',
+                        }
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+
+                    const text = await response.text(); // Get raw text first
+                    let data;
+                    try {
+                        data = JSON.parse(text);
+                    } catch (e) {
+                        // console.error("Error parseando JSON:", text); // Log raw response if parse fails
+                        throw new Error("Respuesta no válida (HTML en vez de JSON)");
+                    }
+
                     if (data.status === 'success') {
                         setProducts((data.products || []).filter(p => p && String(p).trim() !== ""));
                         setLocations((data.locations || []).filter(l => l && String(l).trim() !== ""));
-                        
-                        // Historial: Reciente -> Antiguo (.reverse()) - Mantenemos esto para el Historial
                         const newLog = (data.auditLog || []).reverse();
                         setAuditLog(newLog);
-                        
-                        // Limpiar estados temporales si el servidor ya confirmó
                         setPendingVerification(prev => prev.filter(loc => !newLog.some(entry => entry.location === loc)));
-                        // Si ya no está en el log del servidor, quitar de deletingLocations
                         setDeletingLocations(prev => prev.filter(loc => newLog.some(entry => entry.location === loc)));
-                        
                         setLastUpdate(new Date());
                         setIsOnline(true);
+                        setError(''); // Clear error on success
                     } else {
                         setIsOnline(false);
+                        setError('Error en status del servidor');
                     }
                 } catch (err) { 
-                    // Error silencioso para no saturar la consola en caso de fallo de red
-                    // console.error(err); 
+                    // console.error("Error de conexión:", err); // Log visible
                     setIsOnline(false);
+                    setError(err.message); // Store error for UI
                 } finally { 
                     if (!silent) setLoading(false); 
                 }
@@ -1588,7 +1577,14 @@
                     
                     try {
                         // Enviar sin await blocking UI, pero await aqui para la cola serial
-                        await fetch(APPS_SCRIPT_URL, { method: 'POST', body: JSON.stringify(itemToSave) });
+                        // CAMBIO: También aquí aseguramos 'no-cors' si es necesario, pero POST usually requires headers
+                        // Para POST a Apps Script Web App, 'no-cors' funciona pero no devuelve respuesta legible.
+                        // Usamos standard fetch, confiando en que el GET funcionó.
+                        await fetch(APPS_SCRIPT_URL, { 
+                            method: 'POST', 
+                            body: JSON.stringify(itemToSave),
+                            credentials: 'omit' // Added consistency
+                        });
                         // Exito, quitar de la cola
                         setSaveQueue(prev => prev.slice(1));
                         addLog(`Cola procesada: ${itemToSave.location} guardado.`);
@@ -1617,13 +1613,86 @@
                 return () => window.removeEventListener('keydown', handleKeyDown);
             }, []);
 
-            // Polling cada 2 segundos
+            // Polling cada 3 segundos (ACTUALIZADO)
             React.useEffect(() => { 
                 fetchSheetData(); 
-                const interval = setInterval(() => fetchSheetData(true), 2000);
+                const interval = setInterval(() => fetchSheetData(true), 3000); // 3000ms = 3 segundos
                 return () => clearInterval(interval);
             }, []);
             
+            // Función de formateo de fecha segura (ACTUALIZADA + DEBUG)
+            const formatDate = (val) => {
+                if (!val) return '-';
+                
+                // Si el valor es texto y ya parece una fecha (tiene / o : y no es formato ISO 'T'),
+                // lo devolvemos TAL CUAL viene de la base de datos.
+                if (typeof val === 'string' && (val.includes('/') || val.includes(':')) && !val.includes('T')) {
+                    return val;
+                }
+
+                let dateObj = null;
+
+                // Caso 1: String con formato DD/MM/YYYY o DD-MM-YYYY (o ISO con T)
+                if (typeof val === 'string') {
+                    const cleanVal = val.replace(/['"]/g, '');
+                    if (cleanVal.includes('T') || cleanVal.match(/^\d{4}-\d{2}-\d{2}/)) {
+                        dateObj = new Date(cleanVal);
+                    } else if (cleanVal.includes('/')) {
+                        const parts = cleanVal.split(/[\/\s:]/); // Separar por / espacio :
+                        if (parts.length >= 3) {
+                            const day = parseInt(parts[0], 10);
+                            const month = parseInt(parts[1], 10) - 1; // Mes 0-11
+                            let year = parseInt(parts[2], 10);
+                            if (year < 100) year += 2000; // Asumir 20xx
+                            
+                            let hours = 0, minutes = 0, seconds = 0;
+                            if (parts.length >= 5) {
+                                hours = parseInt(parts[3], 10);
+                                minutes = parseInt(parts[4], 10);
+                                if (parts[5]) seconds = parseInt(parts[5], 10);
+                            }
+                            dateObj = new Date(year, month, day, hours, minutes, seconds);
+                        }
+                    } else {
+                        // Si es texto pero no parece fecha standard, lo retornamos tal cual (ej: "Ayer")
+                        return val;
+                    }
+                }
+                
+                // Caso 2: Timestamp numérico (ID o timestamp real)
+                if (!dateObj && !isNaN(Number(val))) {
+                    const num = Number(val);
+                    // Solo tratamos como fecha si el número es GRANDE (un timestamp real en milisegundos)
+                    // 1000000000000 equivale al año 2001. Si es menor (ej. id: 55), NO es una fecha.
+                    if (num > 1000000000000) {
+                        dateObj = new Date(num);
+                    } else {
+                        return "-"; 
+                    }
+                }
+                
+                // Fallback final: Si es texto y Date() lo entiende
+                if (!dateObj && typeof val === 'string') {
+                    const tryDate = new Date(val);
+                    if (!isNaN(tryDate.getTime())) {
+                        dateObj = tryDate;
+                    }
+                }
+                
+                // Si después de todo no es fecha válida, devolvemos el valor original (o un guion)
+                if (!dateObj || isNaN(dateObj.getTime())) return val;
+
+                // Formatear a dd/mm/yyyy hh:mm:ss
+                const day = String(dateObj.getDate()).padStart(2, '0');
+                const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+                const year = String(dateObj.getFullYear()); 
+                const hours = String(dateObj.getHours()).padStart(2, '0');
+                const minutes = String(dateObj.getMinutes()).padStart(2, '0');
+                const seconds = String(dateObj.getSeconds()).padStart(2, '0');
+
+                return `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
+            }
+
             // Función para generar PDF
             const generatePDF = () => {
                 const { jsPDF } = window.jspdf;
@@ -1635,20 +1704,64 @@
                 doc.setTextColor(100);
                 doc.text(`Fecha: ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}`, 14, 30);
                 
-                const tableColumn = ["Ubicación", "Producto", "Cantidad"];
+                // CAMBIO: Nombre de columna actualizado
+                const tableColumn = ["Lugar", "Producto", "Cantidad", "FECHA REGISTRO"];
                 const tableRows = [];
 
-                // Usamos auditLog (que está Reciente->Antiguo) para generar el PDF
-                auditLog.forEach(ticket => {
+                // Usamos auditLog clonado y ORDENADO CRONOLÓGICAMENTE para el PDF
+                // El estado auditLog está en orden inverso (Reciente->Antiguo) para UI
+                // Pero el PDF debe ser cronológico (Antiguo->Reciente)
+                const chronologicalLog = [...auditLog].sort((a, b) => {
+                    const timeA = a.timestamp || a.id;
+                    const timeB = b.timestamp || b.id;
+                    return new Date(timeA) - new Date(timeB);
+                });
+
+                chronologicalLog.forEach(ticket => {
+                    // Filtrar filas vacías o incompletas
+                    if (!ticket.location || !ticket.product || !ticket.quantity) return;
+
+                    // DEBUG INTERNO PARA VER QUÉ CLAVES LLEGAN
+                    console.log("Fila PDF:", ticket);
+
+                    // Aquí intentamos obtener la fecha de manera AGRESIVA
+                    // Buscamos cualquier llave que se parezca a 'fecha', 'date', 'time'
+                    const findDateValue = (obj) => {
+                        // 1. Busqueda directa
+                        const candidates = ['FECHA REGISTRO', 'fecha registro', 'Fecha Registro', 'FECHAREGISTRO', 'fechaRegistro', 'timestamp', 'date', 'Date', 'fecha', 'Fecha'];
+                        for (const key of candidates) {
+                            if (obj[key]) return obj[key];
+                        }
+                        // 2. Busqueda insensible a mayusculas
+                        const keys = Object.keys(obj);
+                        const match = keys.find(k => k.toUpperCase().includes('FECHA') || k.toUpperCase().includes('DATE') || k.toUpperCase().includes('TIME'));
+                        if (match) return obj[match];
+                        
+                        // 3. Fallback a ID/Timestamp (ÚLTIMO RECURSO PERO SEGURO)
+                        return obj.id || obj.timestamp;
+                    };
+
+                    const rawDate = findDateValue(ticket);
+                    const dateStr = formatDate(rawDate);
+
                     const ticketData = [
                         ticket.location,
                         ticket.product,
                         ticket.quantity,
+                        dateStr
                     ];
                     tableRows.push(ticketData);
                 });
 
-                doc.autoTable(tableColumn, tableRows, { startY: 40 });
+                doc.autoTable({
+                    head: [tableColumn],
+                    body: tableRows,
+                    startY: 40,
+                    theme: 'grid',
+                    styles: { fontSize: 10 },
+                    headStyles: { fillColor: [22, 163, 74] } 
+                });
+                
                 doc.save(`Auditoria_${new Date().toISOString().slice(0,10)}.pdf`);
             };
 
@@ -1671,7 +1784,17 @@
                 if (!selectedLocation || !selectedProduct || !quantity) return alert("Faltan datos");
                 
                 // OPTIMISTIC UPDATE: Actualizar UI Inmediatamente
-                const payload = { location: selectedLocation, product: selectedProduct, quantity: quantity };
+                // Add timestamp to payload for PDF
+                const timestamp = Date.now();
+                
+                // CAMBIO REALIZADO: Enviamos 'timestamp' (número) en lugar de ISOString (texto)
+                const payload = { 
+                    id: timestamp, 
+                    location: selectedLocation, 
+                    product: selectedProduct, 
+                    quantity: quantity, 
+                    timestamp: timestamp // <--- Ahora se envía como número
+                };
                 
                 // Agregar a la cola de guardado
                 setSaveQueue(prev => [...prev, payload]);
@@ -1761,6 +1884,24 @@
             // Productos únicos para búsqueda en mapa
             const uniqueProducts = [...new Set(auditLog.map(item => item.product))].sort();
 
+            // --- DETECCIÓN DE COLUMNAS PARA DIAGNÓSTICO ---
+            const detectedColumns = React.useMemo(() => {
+                if (auditLog.length > 0) {
+                    return Object.keys(auditLog[0]);
+                }
+                return [];
+            }, [auditLog]);
+
+            // --- Lógica de fecha robusta reutilizable ---
+            const getEntryDate = (entry) => {
+                const candidates = ['FECHA REGISTRO', 'fecha registro', 'Fecha Registro', 'FECHAREGISTRO', 'fechaRegistro', 'timestamp', 'date', 'Date', 'fecha', 'Fecha'];
+                for (const key of candidates) {
+                    if (entry[key]) return formatDate(entry[key]);
+                }
+                // Fallback a timestamp/id
+                return formatDate(entry.id || entry.timestamp);
+            };
+
             return (
                 <div className="flex flex-col h-full bg-slate-50 text-slate-800 font-sans prevent-browser-zoom">
                     <header className="bg-blue-900 text-white p-4 shadow-md z-20 flex justify-between items-center shrink-0">
@@ -1833,16 +1974,23 @@
                                 return ( 
                                     <div key={idx} onClick={() => handleLocationClick(loc)} className={`p-4 rounded-lg border shadow-sm flex flex-col gap-1 cursor-pointer ${data ? 'bg-green-50 border-green-200' : 'bg-white'}`}>
                                         <div className="flex justify-between items-center">
-                                            <span className="font-semibold">{loc}</span>
-                                            <div className="flex gap-2 items-center">
+                                            {/* NOMBRE + ICONO DE MAPA JUNTOS */}
+                                            <div className="flex items-center gap-2">
+                                                <span className="font-semibold">{loc}</span>
                                                 <button onClick={(e) => { e.stopPropagation(); goToMapAndFocus(loc); }} className="text-blue-500 p-1 hover:bg-blue-50 rounded" title="Ver en mapa"><Icons.Target /></button>
-                                                {data ? <Icons.CheckCircle className="text-green-600 w-5 h-5" /> : <span className="text-xs text-slate-400">Pendiente</span>}
                                             </div>
+                                            {/* ICONO DE ESTADO A LA DERECHA */}
+                                            {data ? <Icons.CheckCircle className="text-green-600 w-5 h-5" /> : <span className="text-xs text-slate-400">Pendiente</span>}
                                         </div>
                                         {data && (
-                                            <div className="text-sm text-slate-600 flex justify-between border-t border-green-100 pt-2 mt-1">
-                                                <span className="truncate flex-1 font-medium text-blue-800">{data.product}</span>
-                                                <span className="font-bold bg-green-200 px-2 rounded text-green-900">{data.quantity}</span>
+                                            <div className="mt-1 border-t border-green-100 pt-2">
+                                                <div className="text-sm text-slate-600 flex justify-between">
+                                                    <span className="truncate flex-1 font-medium text-blue-800">{data.product}</span>
+                                                    <span className="font-bold bg-green-200 px-2 rounded text-green-900">{data.quantity}</span>
+                                                </div>
+                                                <div className="text-[10px] text-slate-400 text-right mt-1 font-mono">
+                                                    {getEntryDate(data)}
+                                                </div>
                                             </div>
                                         )}
                                     </div>
@@ -1856,7 +2004,26 @@
                             </div>
                             <div className="relative mb-4"><div className="absolute top-3 left-3 text-slate-400"><Icons.Search /></div><input type="text" placeholder="Filtrar historial..." className="w-full pl-10 p-2 rounded-lg border shadow-sm text-sm" value={historySearchTerm} onChange={(e) => setHistorySearchTerm(e.target.value)} /></div>
                             
-                            <div className="space-y-3 pb-20">{filteredHistory.map((entry, idx) => ( <div key={idx} className="bg-white p-4 rounded-lg border-l-4 border-blue-600 shadow-sm flex justify-between items-center"><div><div className="flex items-center gap-2"><h3 className="font-bold text-blue-900">{entry.location}</h3><button onClick={() => goToMapAndFocus(entry.location)} className="text-blue-400 hover:text-blue-600" title="Ver en mapa"><Icons.Target /></button></div><p className="text-sm font-medium">{entry.product}</p></div><div className="text-right"><span className="block text-xl font-bold">{entry.quantity}</span><span className="text-xs text-slate-500">Sacos</span></div></div>))}</div>
+                            <div className="space-y-3 pb-20">{filteredHistory.map((entry, idx) => ( 
+                                <div key={idx} className="bg-white p-4 rounded-lg border-l-4 border-blue-600 shadow-sm flex flex-col gap-2">
+                                    <div className="flex justify-between items-center">
+                                        <div>
+                                            <div className="flex items-center gap-2">
+                                                <h3 className="font-bold text-blue-900">{entry.location}</h3>
+                                                <button onClick={() => goToMapAndFocus(entry.location)} className="text-blue-400 hover:text-blue-600" title="Ver en mapa"><Icons.Target /></button>
+                                            </div>
+                                            <p className="text-sm font-medium">{entry.product}</p>
+                                        </div>
+                                        <div className="text-right">
+                                            <span className="block text-xl font-bold">{entry.quantity}</span>
+                                            <span className="text-xs text-slate-500">Sacos</span>
+                                        </div>
+                                    </div>
+                                    <div className="text-xs text-slate-400 text-right border-t pt-1 font-mono">
+                                        {getEntryDate(entry)}
+                                    </div>
+                                </div>
+                            ))}</div>
                         </div>
                         
                         {isDebugMode && <DebugConsole logs={logs} />}
@@ -1883,7 +2050,7 @@
                             <div>
                                 <label className="block text-sm font-bold mb-2">Cantidad</label>
                                 <input 
-                                    ref={quantityInputRef}
+                                    ref={quantityInputRef} 
                                     type="number" 
                                     className="w-full p-3 border rounded-lg text-center text-2xl" 
                                     value={quantity} 
