@@ -856,7 +856,7 @@
             );
         };
 
-        const AutocompleteInput = ({ items, value, onChange, placeholder, onSelect, onEnter }) => {
+        const AutocompleteInput = ({ items, value, onChange, placeholder, onSelect, onEnter, inputRef, autoFocus }) => {
             const [suggestions, setSuggestions] = React.useState([]);
             const [showSuggestions, setShowSuggestions] = React.useState(false);
 
@@ -881,21 +881,39 @@
 
             const handleKeyDown = (e) => {
                 if (e.key === 'Enter') {
-                    if (onEnter) onEnter();
+                    // MODIFICACIÓN: Seleccionar el primero de la lista si hay sugerencias visibles
+                    if (showSuggestions && suggestions.length > 0) {
+                        const firstItem = String(suggestions[0]);
+                        onChange(firstItem); // Actualizar valor con el primero de la lista
+                        if (onSelect) onSelect(firstItem);
+                    }
+                    
                     setShowSuggestions(false);
+                    
+                    if (onEnter) onEnter();
                 }
             };
 
             return (
                 <div className="relative w-full">
                     <input 
+                        ref={inputRef}
                         type="text" 
                         className="w-full p-3 border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-yellow-400 outline-none" 
                         placeholder={placeholder} 
                         value={value} 
                         onChange={handleChange} 
-                        onFocus={() => value && handleChange({target: {value}})} 
+                        onFocus={(e) => {
+                            // Seleccionar texto al enfocar
+                            e.target.select();
+                            if (value && value.length > 0) {
+                                const filtered = items.filter(item => String(item).toLowerCase().includes(value.toLowerCase()));
+                                setSuggestions(filtered);
+                                setShowSuggestions(true);
+                            }
+                        }}
                         onKeyDown={handleKeyDown}
+                        autoFocus={autoFocus}
                     />
                     {showSuggestions && suggestions.length > 0 && (
                         <ul className="absolute z-50 w-full bg-white border border-slate-200 rounded-lg mt-1 max-h-48 overflow-y-auto shadow-xl">
@@ -1122,29 +1140,38 @@
             const [mapSearchQuery, setMapSearchQuery] = React.useState('');
             const [highlightedZones, setHighlightedZones] = React.useState([]);
 
-            // Función para centrar en una zona
+            // Función para centrar en una zona (ACTUALIZADA: ZOOM 1/6)
             const centerOnZone = (zoneName) => {
                  if (panzoomInstance.current && mapContainerRef.current) {
                     const targetZone = zones.find(z => z.name === zoneName);
                     if (targetZone) {
-                        const rect = mapContainerRef.current.getBoundingClientRect();
                         const parent = mapContainerRef.current.parentElement.getBoundingClientRect();
+                        const containerWidth = parent.width;
+                        const containerHeight = parent.height;
                         
-                        // Center of the viewport
-                        const containerCenterX = parent.width / 2;
-                        const containerCenterY = parent.height / 2;
+                        // 1. Calcular escala objetivo (1/6 de la pantalla)
+                        // Usamos la dimensión más pequeña de la pantalla y la más grande de la zona
+                        const zoneSize = Math.max(targetZone.w, targetZone.h);
+                        const screenSize = Math.min(containerWidth, containerHeight);
                         
-                        // Current scale
-                        const scale = panzoomInstance.current.getTransform().scale;
+                        // Fórmula: zoneSize * scale = screenSize / 6
+                        let targetScale = (screenSize / 6) / zoneSize;
                         
-                        // Zone center relative to the map image
+                        // Limitar escala para evitar zooms extremos
+                        targetScale = Math.min(Math.max(targetScale, 0.1), 8); // Max zoom 8x
+                        
+                        // 2. Calcular centro de la zona
                         const zoneCenterX = targetZone.x + targetZone.w / 2;
                         const zoneCenterY = targetZone.y + targetZone.h / 2;
                         
-                        // Calculate transform needed
-                        const newX = containerCenterX - zoneCenterX * scale;
-                        const newY = containerCenterY - zoneCenterY * scale;
+                        // 3. Calcular posición para centrar
+                        // offset = CentroPantalla - (CentroZona * Escala)
+                        const newX = (containerWidth / 2) - (zoneCenterX * targetScale);
+                        const newY = (containerHeight / 2) - (zoneCenterY * targetScale);
 
+                        // 4. Aplicar (Zoom primero, luego mover)
+                        // zoomAbs(0, 0, scale) escala relativo al origen 0,0 del contenedor
+                        panzoomInstance.current.zoomAbs(0, 0, targetScale);
                         panzoomInstance.current.moveTo(newX, newY);
                     }
                 }
@@ -1653,6 +1680,7 @@
             const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = React.useState(false);
             
             const quantityInputRef = React.useRef(null);
+            const productInputRef = React.useRef(null);
             
             // --- MODO DEBUG Y HERRAMIENTAS ---
             const [showTools, setShowTools] = React.useState(false);
@@ -1751,17 +1779,20 @@
                 }
             }, [saveQueue]);
 
-            // Efecto para Ctrl+D
+            // Efecto para Ctrl+D (RESTAURADO Y PROTEGIDO PARA ADMIN)
             React.useEffect(() => {
                 const handleKeyDown = (e) => {
                     if (e.ctrlKey && e.key === 'd') {
                         e.preventDefault();
-                        setShowTools(prev => !prev);
+                        // Verificar si hay usuario logueado y si es ADMIN
+                        if (currentUser && currentUser.toUpperCase() === 'ADMIN') {
+                            setShowTools(prev => !prev);
+                        }
                     }
                 };
                 window.addEventListener('keydown', handleKeyDown);
                 return () => window.removeEventListener('keydown', handleKeyDown);
-            }, []);
+            }, [currentUser]); // Dependencia necesaria para leer el usuario actualizado
 
             // Polling cada 3 segundos (ACTUALIZADO)
             React.useEffect(() => { 
@@ -1770,6 +1801,17 @@
                 return () => clearInterval(interval);
             }, []);
             
+            // Effect to focus on Product input when modal opens
+            React.useEffect(() => {
+                if (isModalOpen && productInputRef.current) {
+                    setTimeout(() => {
+                        productInputRef.current.focus();
+                        productInputRef.current.select();
+                    }, 50);
+                }
+            }, [isModalOpen]);
+
+
             // Función de formateo de fecha segura (ACTUALIZADA + DEBUG)
             const formatDate = (val) => {
                 if (!val) return '-';
@@ -1960,6 +2002,12 @@
             };
             
             const handleQuantityKeyDown = (e) => {
+                // Prevenir letras
+                if (['e', 'E', '+', '-'].includes(e.key)) {
+                    e.preventDefault();
+                    return;
+                }
+
                 if (e.key === 'Enter') {
                     handleSaveAudit();
                 }
@@ -2188,11 +2236,17 @@
                             <div>
                                 <label className="block text-sm font-bold mb-2 text-slate-700">Producto</label>
                                 <AutocompleteInput 
+                                    inputRef={productInputRef}
                                     items={products} 
                                     value={selectedProduct} 
                                     onChange={setSelectedProduct} 
                                     placeholder="Buscar producto..." 
-                                    onEnter={() => quantityInputRef.current && quantityInputRef.current.focus()}
+                                    onEnter={() => {
+                                        if (quantityInputRef.current) {
+                                            quantityInputRef.current.focus();
+                                            quantityInputRef.current.select();
+                                        }
+                                    }}
                                 />
                             </div>
                             <div>
@@ -2202,6 +2256,7 @@
                                     type="number" 
                                     className="w-full p-3 border rounded-lg text-center text-2xl focus:ring-2 focus:ring-yellow-400 outline-none" 
                                     value={quantity} 
+                                    onFocus={(e) => e.target.select()}
                                     onChange={(e) => setQuantity(e.target.value)} 
                                     onKeyDown={handleQuantityKeyDown}
                                 />
