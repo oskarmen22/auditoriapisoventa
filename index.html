@@ -15,6 +15,9 @@
     <!-- Librería para PDF -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
+    <!-- Librerías para ZIP y Excel/CSV -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
     
     <!-- Estilos adicionales -->
     <style>
@@ -758,33 +761,6 @@
   },
   {
     "id": 1766553930478,
-    "name": "PLANTA2 (C-14)",
-    "x": 2293.8262755631135,
-    "y": 2206.498686364455,
-    "w": 103.38834255456598,
-    "h": 103.38834255456598,
-    "r": 0
-  },
-  {
-    "id": 1766553944531,
-    "name": "PLANTA2 (C-15)",
-    "x": 2294.3173701902483,
-    "y": 2305.6739539599225,
-    "w": 103.38834255456598,
-    "h": 103.38834255456598,
-    "r": 0
-  },
-  {
-    "id": 1766553954844,
-    "name": "PLANTA2 (C-16)",
-    "x": 2292.8957804801216,
-    "y": 2403.6344085303735,
-    "w": 103.38834255456598,
-    "h": 103.38834255456598,
-    "r": 0
-  },
-  {
-    "id": 1766554042122,
     "name": "DE CARGA (A-1)",
     "x": 946.2402477530968,
     "y": 1702.4029751540302,
@@ -821,6 +797,28 @@
   }
 ];
 
+        // --- FUNCIONES AUXILIARES ---
+        // Extrae el nombre del producto, eliminando el código si existe.
+        const getProductName = (fullString) => {
+            if (!fullString) return "";
+            const parts = fullString.split('-');
+            if (parts.length > 1) {
+                // Si hay guión, asumimos formato CODIGO-NOMBRE. Retornamos todo después del primer guión.
+                return parts.slice(1).join('-').trim();
+            }
+            return fullString;
+        };
+        
+        // Extrae el código del producto.
+        const getProductCode = (fullString) => {
+            if (!fullString) return "";
+            const parts = fullString.split('-');
+            if (parts.length > 1) {
+                 return parts[0].trim();
+            }
+            return "";
+        };
+
         // --- COMPONENTE DE CONSOLA DE DEBUG ---
         const DebugConsole = ({ logs }) => {
             if (!logs || logs.length === 0) return null;
@@ -856,15 +854,48 @@
             );
         };
 
+        // Helper para mostrar producto limpio (sin código)
+        const cleanProductName = (fullName) => {
+            if (!fullName) return '';
+            // Si tiene guión, tomar todo después del primer guión
+            if (fullName.includes('-')) {
+                return fullName.substring(fullName.indexOf('-') + 1).trim();
+            }
+            return fullName;
+        };
+
+        // Helper para extraer código y nombre para reportes
+        const extractCodeAndName = (fullName) => {
+            if (!fullName) return { code: '', name: '' };
+            if (fullName.includes('-')) {
+                const parts = fullName.split('-');
+                const code = parts[0].trim();
+                const name = parts.slice(1).join('-').trim();
+                return { code, name };
+            }
+            return { code: '', name: fullName };
+        };
+
         const AutocompleteInput = ({ items, value, onChange, placeholder, onSelect, onEnter, inputRef, autoFocus }) => {
             const [suggestions, setSuggestions] = React.useState([]);
             const [showSuggestions, setShowSuggestions] = React.useState(false);
 
+            // Filtrar usando el nombre limpio pero manteniendo la referencia al original
+            const getFilteredSuggestions = (query) => {
+                if (!query) return [];
+                const lowerQuery = query.toLowerCase();
+                return items.filter(item => {
+                    const cleanName = cleanProductName(item);
+                    return cleanName.toLowerCase().includes(lowerQuery);
+                });
+            };
+
             const handleChange = (e) => {
                 const inputVal = e.target.value;
-                onChange(inputVal);
+                onChange(inputVal); // El padre recibe lo que se escribe tal cual (para nuevos productos)
+                
                 if (inputVal.length > 0) {
-                    const filtered = items.filter(item => String(item).toLowerCase().includes(inputVal.toLowerCase()));
+                    const filtered = getFilteredSuggestions(inputVal);
                     setSuggestions(filtered);
                     setShowSuggestions(true);
                 } else {
@@ -872,19 +903,18 @@
                 }
             };
 
-            const handleSelect = (item) => {
-                const val = String(item);
-                onChange(val);
+            const handleSelect = (fullItemString) => {
+                onChange(fullItemString); // Enviar el string completo (CODE-NAME) al padre
                 setShowSuggestions(false);
-                if (onSelect) onSelect(val);
+                if (onSelect) onSelect(fullItemString);
             };
 
             const handleKeyDown = (e) => {
                 if (e.key === 'Enter') {
-                    // MODIFICACIÓN: Seleccionar el primero de la lista si hay sugerencias visibles
+                    // Seleccionar el primero de la lista si hay sugerencias visibles
                     if (showSuggestions && suggestions.length > 0) {
                         const firstItem = String(suggestions[0]);
-                        onChange(firstItem); // Actualizar valor con el primero de la lista
+                        onChange(firstItem); 
                         if (onSelect) onSelect(firstItem);
                     }
                     
@@ -894,6 +924,10 @@
                 }
             };
 
+            // Valor a mostrar en el input: Si el valor actual coincide con uno de la lista (tiene código), mostrar limpio
+            // Si es algo que el usuario está escribiendo y no tiene guión, mostrar tal cual
+            const displayValue = value && items.includes(value) ? cleanProductName(value) : value;
+
             return (
                 <div className="relative w-full">
                     <input 
@@ -901,13 +935,18 @@
                         type="text" 
                         className="w-full p-3 border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-yellow-400 outline-none" 
                         placeholder={placeholder} 
-                        value={value} 
-                        onChange={handleChange} 
+                        value={displayValue} 
+                        onChange={(e) => {
+                            // Cuando el usuario escribe, asumimos que está escribiendo el nombre
+                            // Pasamos el valor crudo al padre, pero el input es controlado.
+                            // Esto es un poco truco: si el padre tiene el valor "CODE-NAME", displayValue lo limpia.
+                            // Si el usuario borra una letra, el padre recibe "NAM". "NAM" no está en items, así que displayValue es "NAM".
+                            handleChange(e);
+                        }} 
                         onFocus={(e) => {
-                            // Seleccionar texto al enfocar
                             e.target.select();
-                            if (value && value.length > 0) {
-                                const filtered = items.filter(item => String(item).toLowerCase().includes(value.toLowerCase()));
+                            if (displayValue && displayValue.length > 0) {
+                                const filtered = getFilteredSuggestions(displayValue);
                                 setSuggestions(filtered);
                                 setShowSuggestions(true);
                             }
@@ -918,7 +957,9 @@
                     {showSuggestions && suggestions.length > 0 && (
                         <ul className="absolute z-50 w-full bg-white border border-slate-200 rounded-lg mt-1 max-h-48 overflow-y-auto shadow-xl">
                             {suggestions.map((item, idx) => (
-                                <li key={idx} className="p-3 hover:bg-yellow-50 cursor-pointer border-b border-slate-50 text-sm text-slate-700" onClick={() => handleSelect(item)}>{String(item)}</li>
+                                <li key={idx} className="p-3 hover:bg-yellow-50 cursor-pointer border-b border-slate-50 text-sm text-slate-700" onClick={() => handleSelect(item)}>
+                                    {cleanProductName(item)}
+                                </li>
                             ))}
                         </ul>
                     )}
@@ -1364,7 +1405,7 @@
                 // Siempre buscar producto (punto 2: quitar búsqueda de lugar, ir directo a producto)
                 // Buscar todas las zonas que tengan ese producto
                 const zonesWithProduct = auditLog
-                    .filter(entry => entry.product === val)
+                    .filter(entry => getProductName(entry.product) === val)
                     .map(entry => entry.location);
                 
                 if (zonesWithProduct.length > 0) {
@@ -1746,6 +1787,23 @@
                 }
             };
             
+            // Map Name -> Full String for efficient lookup
+            const nameToFullProductMap = React.useMemo(() => {
+                const map = new Map();
+                products.forEach(p => {
+                    const name = cleanProductName(p); // Use clean name for mapping
+                    // If duplicate names exist, last one wins (or handle logic here if strict code mapping needed)
+                    if (name) map.set(name, p);
+                });
+                return map;
+            }, [products]);
+
+            // List of just names for Autocomplete
+            const productNamesList = React.useMemo(() => {
+                // Pass full strings to autocomplete, it handles cleaning now
+                return products;
+            }, [products]);
+
             // PROCESADOR DE COLA DE GUARDADO
             React.useEffect(() => {
                 const processQueue = async () => {
@@ -1885,24 +1943,47 @@
                 return `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
             }
 
-            // Función para generar PDF
-            const generatePDF = () => {
+            // Helper to get formatted date for folder name (ddMMMyy)
+            const getFormattedDateForFolder = () => {
+                const date = new Date();
+                const day = String(date.getDate()).padStart(2, '0');
+                const months = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+                const month = months[date.getMonth()];
+                const year = String(date.getFullYear()).slice(-2);
+                return `${day}${month}${year}`;
+            };
+
+            // Función para generar Reportes (PDF + CSV en ZIP)
+            const generateReports = () => {
                 const { jsPDF } = window.jspdf;
-                const doc = new jsPDF();
+                const zip = new JSZip();
+                const dateStr = getFormattedDateForFolder();
+                const folderName = `AuditoriaPisodeventas${dateStr}`;
+                const folder = zip.folder(folderName);
                 
+                // 0. Build a lookup map for codes from the products catalog
+                // keys: Clean Name (lowercase for safety), value: Code
+                const productCodeMap = new Map();
+                products.forEach(fullStr => {
+                    const c = getProductCode(fullStr);
+                    const n = getProductName(fullStr);
+                    if (c && n) {
+                        productCodeMap.set(n.toLowerCase(), c);
+                    }
+                });
+                
+                // 1. Generar PDF
+                const doc = new jsPDF();
                 doc.setFontSize(18);
                 doc.text("Reporte de Auditoría", 14, 22);
                 doc.setFontSize(11);
                 doc.setTextColor(100);
                 doc.text(`Fecha: ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}`, 14, 30);
                 
-                // CAMBIO: Nombre de columna actualizado
-                const tableColumn = ["Lugar", "Producto", "Cantidad", "FECHA REGISTRO", "USUARIO"];
+                const tableColumn = ["Lugar", "Codigo", "Producto", "Cantidad", "Fecha Registro", "Usuario"];
                 const tableRows = [];
+                const csvRows = [["Lugar", "Codigo", "Producto", "Cantidad", "Fecha Registro", "Usuario"]]; // Header CSV
 
-                // Usamos auditLog clonado y ORDENADO CRONOLÓGICAMENTE para el PDF
-                // El estado auditLog está en orden inverso (Reciente->Antiguo) para UI
-                // Pero el PDF debe ser cronológico (Antiguo->Reciente)
                 const chronologicalLog = [...auditLog].sort((a, b) => {
                     const timeA = a.timestamp || a.id;
                     const timeB = b.timestamp || b.id;
@@ -1910,40 +1991,49 @@
                 });
 
                 chronologicalLog.forEach(ticket => {
-                    // Filtrar filas vacías o incompletas
                     if (!ticket.location || !ticket.product || !ticket.quantity) return;
 
-                    // DEBUG INTERNO PARA VER QUÉ CLAVES LLEGAN
-                    console.log("Fila PDF:", ticket);
-
-                    // Aquí intentamos obtener la fecha de manera AGRESIVA
-                    // Buscamos cualquier llave que se parezca a 'fecha', 'date', 'time'
                     const findDateValue = (obj) => {
-                        // 1. Busqueda directa
                         const candidates = ['FECHA REGISTRO', 'fecha registro', 'Fecha Registro', 'FECHAREGISTRO', 'fechaRegistro', 'timestamp', 'date', 'Date', 'fecha', 'Fecha'];
                         for (const key of candidates) {
                             if (obj[key]) return obj[key];
                         }
-                        // 2. Busqueda insensible a mayusculas
-                        const keys = Object.keys(obj);
-                        const match = keys.find(k => k.toUpperCase().includes('FECHA') || k.toUpperCase().includes('DATE') || k.toUpperCase().includes('TIME'));
-                        if (match) return obj[match];
-                        
-                        // 3. Fallback a ID/Timestamp (ÚLTIMO RECURSO PERO SEGURO)
                         return obj.id || obj.timestamp;
                     };
 
                     const rawDate = findDateValue(ticket);
                     const dateStr = formatDate(rawDate);
+                    
+                    // Separar Código y Producto
+                    // Si el producto en ticket no tiene codigo, buscar en el mapa
+                    let fullProd = ticket.product;
+                    let { code, name } = extractCodeAndName(fullProd);
+                    
+                    if (!code) {
+                         // Intentar recuperar codigo usando el nombre limpio
+                         const cleanName = cleanProductName(fullProd);
+                         const foundCode = productCodeMap.get(cleanName.toLowerCase());
+                         if (foundCode) {
+                             code = foundCode;
+                             name = cleanName; // Usar nombre limpio
+                         }
+                    }
 
-                    const ticketData = [
+                    const userStr = ticket.user || ticket.usuario || '-';
+
+                    const rowData = [
                         ticket.location,
-                        ticket.product,
+                        code,
+                        name,
                         ticket.quantity,
                         dateStr,
-                        ticket.user || ticket.usuario || '-'
+                        userStr
                     ];
-                    tableRows.push(ticketData);
+
+                    tableRows.push(rowData);
+                    // CSV Row logic (basic escaping)
+                    const csvRow = rowData.map(val => `"${String(val).replace(/"/g, '""')}"`);
+                    csvRows.push(csvRow);
                 });
 
                 doc.autoTable({
@@ -1955,7 +2045,20 @@
                     headStyles: { fillColor: [220, 38, 38] } 
                 });
                 
-                doc.save(`Auditoria_${new Date().toISOString().slice(0,10)}.pdf`);
+                const pdfBlob = doc.output('blob');
+
+                // 2. Generar CSV
+                const csvContent = csvRows.map(e => e.join(",")).join("\n");
+                const csvBlob = new Blob([csvContent], { type: "text/csv;charset=utf-8" });
+
+                // 3. Agregar al ZIP
+                folder.file(`${folderName}.pdf`, pdfBlob);
+                folder.file(`${folderName}.csv`, csvBlob);
+
+                // 4. Descargar ZIP
+                zip.generateAsync({type:"blob"}).then(function(content) {
+                    window.saveAs(content, `${folderName}.zip`);
+                });
             };
 
 
@@ -1964,7 +2067,8 @@
                 setSelectedLocation(locName);
                 const existingEntry = auditLog.find(entry => entry.location === locName);
                 if (existingEntry) {
-                    setSelectedProduct(existingEntry.product);
+                    // Use the existing entry full product string
+                    setSelectedProduct(existingEntry.product); 
                     setQuantity(existingEntry.quantity);
                 } else {
                     setSelectedProduct('');
@@ -1976,18 +2080,35 @@
             const handleSaveAudit = () => {
                 if (!selectedLocation || !selectedProduct || !quantity) return alert("Faltan datos");
                 
+                // Reconstruir producto completo si el usuario escribió solo el nombre y existe en el mapa
+                // Si selectedProduct ya es el string completo (porque seleccionó de la lista), esto devuelve lo mismo
+                // Si selectedProduct es un nombre limpio que coincide con un mapa, obtenemos el full string.
+                // Si es un producto nuevo que no está en la lista, se guarda tal cual.
+                
+                // Primero intentamos ver si lo que está escrito es un nombre limpio que machea
+                let productToSave = selectedProduct;
+                
+                // Buscar si existe un match por nombre limpio en nuestro mapa
+                // nameToFullProductMap tiene keys = Clean Name, value = Full String
+                // Pero si el usuario seleccionó de la lista, selectedProduct YA ES Full String.
+                
+                // Chequeamos: es selectedProduct un clean name válido?
+                if (nameToFullProductMap.has(selectedProduct)) {
+                     productToSave = nameToFullProductMap.get(selectedProduct);
+                } 
+                // Si no, tal vez ya es un full string?
+                // No hacemos nada, se guarda tal cual.
+
                 // OPTIMISTIC UPDATE: Actualizar UI Inmediatamente
-                // Add timestamp to payload for PDF
                 const timestamp = Date.now();
                 
-                // CAMBIO REALIZADO: Enviamos 'timestamp' (número) en lugar de ISOString (texto)
                 const payload = { 
                     id: timestamp, 
                     location: selectedLocation, 
-                    product: selectedProduct, 
+                    product: productToSave, // Guardar FULL STRING
                     quantity: quantity, 
-                    timestamp: timestamp, // <--- Ahora se envía como número
-                    user: currentUser // ENVIAR USUARIO
+                    timestamp: timestamp, 
+                    user: currentUser 
                 };
                 
                 // Agregar a la cola de guardado
@@ -2048,7 +2169,9 @@
                 const filtered = locations.filter(loc => {
                     const auditData = auditMap.get(loc);
                     const matchesLoc = String(loc).toLowerCase().includes(searchLower);
-                    const matchesProd = auditData && String(auditData.product).toLowerCase().includes(searchLower);
+                    // Match against NAME only for cleaner search
+                    const prodName = auditData ? cleanProductName(auditData.product) : "";
+                    const matchesProd = prodName.toLowerCase().includes(searchLower);
                     return matchesLoc || matchesProd;
                 });
                 
@@ -2073,8 +2196,9 @@
             // Filtrado para Historial (mantiene el orden de auditLog: Reciente->Antiguo)
             const filteredHistory = auditLog.filter(entry => {
                 const s = historySearchTerm.toLowerCase();
+                const pName = cleanProductName(entry.product).toLowerCase();
                 return String(entry.location).toLowerCase().includes(s) || 
-                       String(entry.product).toLowerCase().includes(s) ||
+                       pName.includes(s) ||
                        String(entry.quantity).toLowerCase().includes(s) ||
                        (entry.user && String(entry.user).toLowerCase().includes(s));
             });
@@ -2153,7 +2277,7 @@
                                     <div className="absolute top-3 left-3 text-slate-400"><Icons.Search /></div>
                                     <input type="text" placeholder="Buscar lugar o producto..." className="w-full pl-10 p-3 rounded-lg border shadow-sm focus:ring-2 focus:ring-red-500 outline-none" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
                                 </div>
-                                <button onClick={generatePDF} className="bg-red-600 text-white p-3 rounded-lg shadow hover:bg-red-700 active:scale-95 transition-transform" title="Reportar PDF">
+                                <button onClick={generateReports} className="bg-red-600 text-white p-3 rounded-lg shadow hover:bg-red-700 active:scale-95 transition-transform" title="Descargar Reporte ZIP (PDF + CSV)">
                                     <Icons.FileText />
                                 </button>
                             </div>
@@ -2173,7 +2297,7 @@
                                         {data && (
                                             <div className="mt-1 border-t border-slate-100 pt-2">
                                                 <div className="text-sm text-slate-600 flex justify-between items-center">
-                                                    <span className="truncate flex-1 font-medium text-slate-900">{data.product}</span>
+                                                    <span className="truncate flex-1 font-medium text-slate-900">{cleanProductName(data.product)}</span>
                                                     <span className="font-bold bg-yellow-100 text-yellow-800 px-2 py-0.5 rounded text-xs">{data.quantity}</span>
                                                 </div>
                                                 <div className="flex justify-between items-center mt-2">
@@ -2205,7 +2329,7 @@
                                                 <h3 className="font-bold text-slate-900">{entry.location}</h3>
                                                 <button onClick={() => goToMapAndFocus(entry.location)} className="text-red-400 hover:text-red-600" title="Ver en mapa"><Icons.Target /></button>
                                             </div>
-                                            <p className="text-sm font-medium text-slate-600">{entry.product}</p>
+                                            <p className="text-sm font-medium text-slate-600">{cleanProductName(entry.product)}</p>
                                         </div>
                                         <div className="text-right">
                                             <span className="block text-xl font-bold text-slate-900">{entry.quantity}</span>
