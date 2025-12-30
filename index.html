@@ -1369,7 +1369,7 @@
         };
 
         // --- COMPONENTE DE ESCÁNER ---
-        const ScannerComponent = () => {
+        const ScannerComponent = ({ activeTab }) => {
             const videoRef = React.useRef(null);
             const streamRef = React.useRef(null);
             const codeReaderRef = React.useRef(null);
@@ -1386,11 +1386,10 @@
             const scanIntervalRef = React.useRef(null);
             const continuousScanRef = React.useRef(null);
 
-            // Inicializar cámara cuando se monta el componente
+            // Inicializar ZXing cuando se monta el componente (pero NO iniciar cámara)
             React.useEffect(() => {
                 if (window.ZXing) {
                     codeReaderRef.current = new window.ZXing.BrowserMultiFormatReader();
-                    startCamera();
                 }
 
                 return () => {
@@ -1401,6 +1400,22 @@
                     if (continuousScanRef.current) clearInterval(continuousScanRef.current);
                 };
             }, []);
+
+            // Iniciar cámara cuando se selecciona la pestaña Escáner
+            React.useEffect(() => {
+                if (activeTab === 'scanner') {
+                    if (!isCameraActive && window.ZXing) {
+                        if (!codeReaderRef.current) {
+                            codeReaderRef.current = new window.ZXing.BrowserMultiFormatReader();
+                        }
+                        startCamera();
+                    }
+                } else {
+                    if (isCameraActive) {
+                        stopCamera();
+                    }
+                }
+            }, [activeTab]);
 
             // Escaneo continuo en segundo plano (solo detección, no captura)
             React.useEffect(() => {
@@ -1594,6 +1609,71 @@
                 }
             };
 
+            // Escaneo forzado cuando presiona sin detección previa (sin límite de intentos)
+            const forceScan = async () => {
+                if (!isCameraActive || !videoRef.current || !codeReaderRef.current) return;
+
+                try {
+                    const codeReader = codeReaderRef.current;
+                    const video = videoRef.current;
+                    
+                    if (!video.videoWidth || !video.videoHeight) {
+                        return;
+                    }
+
+                    // Intentar escanear indefinidamente hasta encontrar código o soltar el botón
+                    const tryScan = async () => {
+                        // Si ya escaneó o no está presionado, detener
+                        if (hasScannedRef.current || !isPressed) {
+                            setIsScanning(false);
+                            return;
+                        }
+                        
+                        try {
+                            const canvas = document.createElement('canvas');
+                            canvas.width = video.videoWidth;
+                            canvas.height = video.videoHeight;
+                            const ctx = canvas.getContext('2d');
+                            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+                            const img = new Image();
+                            img.src = canvas.toDataURL('image/png');
+                            
+                            await new Promise((resolve, reject) => {
+                                img.onload = resolve;
+                                img.onerror = reject;
+                                setTimeout(() => reject(new Error('Image load timeout')), 300);
+                            });
+
+                            const result = await codeReader.decodeFromImageElement(img);
+                            
+                            if (result) {
+                                const code = result.getText();
+                                setScannedCode(code);
+                                playBeep();
+                                vibrate();
+                                hasScannedRef.current = true;
+                                setIsScanning(false);
+                                return;
+                            }
+                        } catch (error) {
+                            // Continuar intentando si no encuentra código
+                        }
+
+                        // Si no encontró código y aún está presionado, intentar de nuevo
+                        if (!hasScannedRef.current && isPressed) {
+                            setTimeout(tryScan, 200);
+                        } else {
+                            setIsScanning(false);
+                        }
+                    };
+
+                    await tryScan();
+                } catch (error) {
+                    setIsScanning(false);
+                }
+            };
+
             const handlePressStart = () => {
                 if (!isCameraActive) {
                     startCamera();
@@ -1604,9 +1684,13 @@
                 hasScannedRef.current = false;
                 setTimeLeft(30); // Reiniciar temporizador
                 
-                // Capturar el código detectado si hay uno
+                // Si hay detección previa, capturar inmediatamente
                 if (isDetecting && detectedCode) {
                     captureCode();
+                } else {
+                    // Si no hay detección, intentar escanear múltiples veces
+                    setIsScanning(true);
+                    forceScan();
                 }
             };
 
@@ -1708,9 +1792,9 @@
                         </div>
                     </div>
 
-                    {/* Instrucciones */}
+                    {/* Instrucciones - NO bloquea los toques */}
                     {!isCameraActive && (
-                        <div className="absolute inset-0 z-30 bg-black/80 flex items-center justify-center">
+                        <div className="absolute inset-0 z-10 bg-black/80 flex items-center justify-center pointer-events-none">
                             <div className="text-center text-white p-6">
                                 <Icons.Scanner className="mx-auto mb-4" width="64" height="64" />
                                 <p className="text-lg font-bold mb-2">Presiona para activar la cámara</p>
@@ -3413,14 +3497,17 @@
             // Función para obtener el nombre completo de una ubicación
             // SOLO para mostrar en la lista de lugares, NO afecta productos
             const getFullLocationName = (loc) => {
-                if (!loc) return loc;
+                // Asegurar que loc sea un string
+                if (!loc) return String(loc || '');
+                const locStr = String(loc);
+                
                 // Primero intentar buscar coincidencia exacta
-                if (locationNameMap.has(loc)) {
-                    return locationNameMap.get(loc);
+                if (locationNameMap.has(locStr)) {
+                    return locationNameMap.get(locStr);
                 }
                 // Si el nombre tiene guion, intentar buscar la parte antes del guion
-                if (loc.includes('-')) {
-                    const shortName = loc.split('-')[0].trim();
+                if (locStr.includes('-')) {
+                    const shortName = locStr.split('-')[0].trim();
                     if (locationNameMap.has(shortName)) {
                         return locationNameMap.get(shortName);
                     }
@@ -3430,18 +3517,18 @@
                 for (const zone of allZones) {
                     if (zone.name) {
                         // Si el nombre de la zona empieza con el nombre corto del servidor
-                        if (zone.name.startsWith(loc.trim())) {
+                        if (zone.name.startsWith(locStr.trim())) {
                             return zone.name;
                         }
                         // Si el nombre corto del servidor es el inicio del nombre de la zona (antes del guion)
                         const zoneShortName = zone.name.includes('-') ? zone.name.split('-')[0].trim() : zone.name;
-                        if (zoneShortName === loc.trim()) {
+                        if (zoneShortName === locStr.trim()) {
                             return zone.name;
                         }
                     }
                 }
-                // Si no se encuentra, devolver el nombre original
-                return loc;
+                // Si no se encuentra, devolver el nombre original como string
+                return locStr;
             };
 
             const sortedFilteredLocations = React.useMemo(() => {
@@ -3470,7 +3557,10 @@
                     // Si solo B tiene datos, va antes
                     if (entryB) return 1;  
                     // Ambos pendientes: orden alfabético
-                    return a.localeCompare(b); 
+                    // Asegurar que a y b sean strings antes de usar localeCompare
+                    const strA = String(a || '');
+                    const strB = String(b || '');
+                    return strA.localeCompare(strB); 
                 });
             }, [locations, auditMap, searchTerm]);
 
