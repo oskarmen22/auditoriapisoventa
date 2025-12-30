@@ -3136,6 +3136,21 @@
                 }
             }, []);
 
+            // Precargar imágenes del plano y planograma para carga instantánea
+            React.useEffect(() => {
+                const planoImage = new Image();
+                const planogramaImage = new Image();
+                
+                // Precargar imagen del PLANO
+                planoImage.src = "https://i.imgur.com/VRncOKx.jpeg";
+                
+                // Precargar imagen del PLANOGRAMA
+                planogramaImage.src = "https://i.imgur.com/Yuiv4JC.jpeg";
+                
+                // Las imágenes se guardarán en caché del navegador automáticamente
+                // cuando se carguen, permitiendo cambio instantáneo de vista
+            }, []);
+
             const handleLoginSuccess = (user) => {
                 setCurrentUser(user);
                 localStorage.setItem('audit_user', user);
@@ -4294,4 +4309,3 @@
     </script>
 </body>
 </html>
-
