@@ -1519,8 +1519,20 @@
                     const ctx = canvas.getContext('2d');
                     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-                    // Intentar decodificar el código desde el canvas
-                    const result = await codeReader.decodeFromImageElement(canvas);
+                    // Convertir canvas a imagen (data URL) y crear elemento img
+                    const img = new Image();
+                    img.src = canvas.toDataURL('image/png');
+                    
+                    // Esperar a que la imagen se cargue
+                    await new Promise((resolve, reject) => {
+                        img.onload = resolve;
+                        img.onerror = reject;
+                        // Timeout de seguridad
+                        setTimeout(() => reject(new Error('Image load timeout')), 1000);
+                    });
+
+                    // Intentar decodificar el código desde la imagen
+                    const result = await codeReader.decodeFromImageElement(img);
                     
                     if (result) {
                         const code = result.getText();
@@ -1536,7 +1548,10 @@
                     }
                 } catch (error) {
                     // NotFoundException es normal cuando no hay código visible
-                    if (error.name !== 'NotFoundException' && error.message !== 'No QR code found') {
+                    if (error.name !== 'NotFoundException' && 
+                        error.message !== 'No QR code found' && 
+                        error.message !== 'Image load timeout' &&
+                        !error.message.includes('No MultiFormat Readers')) {
                         console.error('Error scanning:', error);
                     }
                     setIsScanning(false);
