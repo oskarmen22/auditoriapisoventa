@@ -1378,10 +1378,13 @@
             const [timeLeft, setTimeLeft] = React.useState(30);
             const [isCameraActive, setIsCameraActive] = React.useState(false);
             const [isPressed, setIsPressed] = React.useState(false);
+            const [isDetecting, setIsDetecting] = React.useState(false);
+            const [detectedCode, setDetectedCode] = React.useState('');
             const timerRef = React.useRef(null);
             const countdownRef = React.useRef(null);
             const hasScannedRef = React.useRef(false);
             const scanIntervalRef = React.useRef(null);
+            const continuousScanRef = React.useRef(null);
 
             // Inicializar cámara cuando se monta el componente
             React.useEffect(() => {
@@ -1395,8 +1398,32 @@
                     if (timerRef.current) clearInterval(timerRef.current);
                     if (countdownRef.current) clearInterval(countdownRef.current);
                     if (scanIntervalRef.current) clearInterval(scanIntervalRef.current);
+                    if (continuousScanRef.current) clearInterval(continuousScanRef.current);
                 };
             }, []);
+
+            // Escaneo continuo en segundo plano (solo detección, no captura)
+            React.useEffect(() => {
+                if (isCameraActive && !isPressed) {
+                    // Escanear continuamente cada 200ms para mayor sensibilidad
+                    continuousScanRef.current = setInterval(() => {
+                        detectCode();
+                    }, 200);
+                } else {
+                    if (continuousScanRef.current) {
+                        clearInterval(continuousScanRef.current);
+                        continuousScanRef.current = null;
+                    }
+                    setIsDetecting(false);
+                    setDetectedCode('');
+                }
+
+                return () => {
+                    if (continuousScanRef.current) {
+                        clearInterval(continuousScanRef.current);
+                    }
+                };
+            }, [isCameraActive, isPressed]);
 
             // Temporizador de cuenta regresiva
             React.useEffect(() => {
@@ -1465,10 +1492,16 @@
                 setIsCameraActive(false);
                 setIsScanning(false);
                 setIsPressed(false);
+                setIsDetecting(false);
+                setDetectedCode('');
                 hasScannedRef.current = false;
                 if (scanIntervalRef.current) {
                     clearInterval(scanIntervalRef.current);
                     scanIntervalRef.current = null;
+                }
+                if (continuousScanRef.current) {
+                    clearInterval(continuousScanRef.current);
+                    continuousScanRef.current = null;
                 }
             };
 
@@ -1501,15 +1534,16 @@
                 }
             };
 
-            const scanCode = async () => {
-                if (!isCameraActive || !videoRef.current || hasScannedRef.current || !codeReaderRef.current) return;
+            // Detección continua (solo detecta, no captura)
+            const detectCode = async () => {
+                if (!isCameraActive || !videoRef.current || !codeReaderRef.current || isPressed) return;
 
                 try {
                     const codeReader = codeReaderRef.current;
                     const video = videoRef.current;
                     
                     if (!video.videoWidth || !video.videoHeight) {
-                        return; // Video aún no está listo
+                        return;
                     }
 
                     // Crear canvas para capturar frame
@@ -1519,42 +1553,44 @@
                     const ctx = canvas.getContext('2d');
                     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-                    // Convertir canvas a imagen (data URL) y crear elemento img
+                    // Convertir canvas a imagen
                     const img = new Image();
                     img.src = canvas.toDataURL('image/png');
                     
-                    // Esperar a que la imagen se cargue
+                    // Esperar a que la imagen se cargue (con timeout más corto para velocidad)
                     await new Promise((resolve, reject) => {
                         img.onload = resolve;
                         img.onerror = reject;
-                        // Timeout de seguridad
-                        setTimeout(() => reject(new Error('Image load timeout')), 1000);
+                        setTimeout(() => reject(new Error('Image load timeout')), 500);
                     });
 
-                    // Intentar decodificar el código desde la imagen
+                    // Intentar decodificar el código
                     const result = await codeReader.decodeFromImageElement(img);
                     
                     if (result) {
                         const code = result.getText();
-                        setScannedCode(code);
-                        playBeep();
-                        vibrate();
-                        hasScannedRef.current = true;
-                        setIsScanning(false);
-                        if (scanIntervalRef.current) {
-                            clearInterval(scanIntervalRef.current);
-                            scanIntervalRef.current = null;
-                        }
+                        setIsDetecting(true);
+                        setDetectedCode(code);
+                    } else {
+                        setIsDetecting(false);
+                        setDetectedCode('');
                     }
                 } catch (error) {
                     // NotFoundException es normal cuando no hay código visible
-                    if (error.name !== 'NotFoundException' && 
-                        error.message !== 'No QR code found' && 
-                        error.message !== 'Image load timeout' &&
-                        !error.message.includes('No MultiFormat Readers')) {
-                        console.error('Error scanning:', error);
-                    }
-                    setIsScanning(false);
+                    setIsDetecting(false);
+                    setDetectedCode('');
+                }
+            };
+
+            // Captura del código (solo cuando presiona)
+            const captureCode = () => {
+                if (detectedCode && isDetecting) {
+                    setScannedCode(detectedCode);
+                    playBeep();
+                    vibrate();
+                    hasScannedRef.current = true;
+                    setIsDetecting(false);
+                    setDetectedCode('');
                 }
             };
 
@@ -1568,15 +1604,10 @@
                 hasScannedRef.current = false;
                 setTimeLeft(30); // Reiniciar temporizador
                 
-                // Escanear inmediatamente
-                scanCode();
-                
-                // Continuar escaneando mientras está presionado (pero solo una vez por presión)
-                scanIntervalRef.current = setInterval(() => {
-                    if (!hasScannedRef.current && isPressed) {
-                        scanCode();
-                    }
-                }, 500); // Intentar cada 500ms
+                // Capturar el código detectado si hay uno
+                if (isDetecting && detectedCode) {
+                    captureCode();
+                }
             };
 
             const handlePressEnd = () => {
@@ -1603,15 +1634,15 @@
                 <div className="h-full flex flex-col bg-black relative">
                     {/* Resultado escaneado en la parte superior */}
                     {scannedCode && (
-                        <div className="absolute top-0 left-0 right-0 z-30 bg-white p-4 shadow-lg border-b-2 border-red-600">
-                            <div className="flex items-center justify-between gap-2">
+                        <div className="absolute top-0 left-0 right-0 z-30 bg-white p-6 m-4 rounded-lg shadow-xl border-2 border-red-600">
+                            <div className="flex items-center justify-between gap-4">
                                 <div className="flex-1 min-w-0">
-                                    <p className="text-xs text-slate-500 mb-1">Código escaneado:</p>
-                                    <p className="text-sm font-mono font-bold text-slate-900 break-all">{scannedCode}</p>
+                                    <p className="text-xs text-slate-500 mb-2 font-semibold">Código escaneado:</p>
+                                    <p className="text-base font-mono font-bold text-slate-900 break-all leading-relaxed">{scannedCode}</p>
                                 </div>
                                 <button
                                     onClick={copyToClipboard}
-                                    className="bg-red-600 text-white px-4 py-2 rounded-lg font-bold text-sm hover:bg-red-700 active:scale-95 transition-transform shrink-0"
+                                    className="bg-red-600 text-white px-6 py-3 rounded-lg font-bold text-sm hover:bg-red-700 active:scale-95 transition-transform shrink-0 shadow-md"
                                 >
                                     Copiar
                                 </button>
@@ -1659,10 +1690,20 @@
                             )}
                         </div>
 
-                        {/* Overlay de guía */}
+                        {/* Overlay de guía y recuadro verde cuando detecta */}
                         <div className="absolute inset-0 z-10 pointer-events-none">
                             <div className="absolute inset-0 flex items-center justify-center">
-                                <div className="border-2 border-white/50 rounded-lg w-64 h-64 shadow-lg"></div>
+                                {isDetecting ? (
+                                    <div className="border-4 border-green-500 rounded-lg w-64 h-64 shadow-lg bg-green-500/20 animate-pulse">
+                                        <div className="absolute inset-0 flex items-center justify-center">
+                                            <div className="bg-green-500 text-white px-4 py-2 rounded-lg font-bold text-sm">
+                                                ✓ Detectando
+                                            </div>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="border-2 border-white/50 rounded-lg w-64 h-64 shadow-lg"></div>
+                                )}
                             </div>
                         </div>
                     </div>
