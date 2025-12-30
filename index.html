@@ -74,7 +74,7 @@
         };
 
         // --- URL DEL SCRIPT DE GOOGLE ---
-        const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwrrT9_bEL1NQYux4VZHMBxD0MxHcmXtH47Xdco8hdiDvnYRJFNmy2eVEv7uaCogAeV/exec"; 
+        const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyCJrLFmgA2Z8Fbbb2QhbAZYfaikbdSG08qEN6_oOFwDVD8DuthGS-j-L2CpyUlbjO-/exec"; 
 
         // --- ZONAS INICIALES ---
         const INITIAL_ZONES = [
@@ -3430,8 +3430,9 @@
                     
                     if (data.status === 'success') {
                         // Abrir modal con los datos encontrados
-                        setScannedLocation(data.ubicacion || '');
+                        // Orden: Producto (no editable), Ubicación (editable si existe), Cantidad (editable)
                         setScannedProduct(data.producto || '');
+                        setScannedLocation(data.ubicacion || ''); // Puede estar vacío si no tiene ubicación
                         setScannedQuantity('');
                         setIsScannerModalOpen(true);
                     } else {
@@ -3920,6 +3921,18 @@
                                 
                                 return (
                                     <>
+                                        {/* PRIMERA CAJA: PRODUCTO (NO EDITABLE) */}
+                                        <div>
+                                            <label className="block text-sm font-bold mb-2 text-slate-700">Producto</label>
+                                            <input 
+                                                type="text" 
+                                                className="w-full p-3 border rounded-lg bg-slate-100" 
+                                                value={scannedProduct} 
+                                                readOnly
+                                            />
+                                        </div>
+                                        
+                                        {/* SEGUNDA CAJA: UBICACIÓN (EDITABLE, solo si tiene valor o siempre mostrar para poder agregar) */}
                                         <div>
                                             <label className="block text-sm font-bold mb-2 text-slate-700">Ubicación</label>
                                             <div className="flex gap-2">
@@ -3928,7 +3941,7 @@
                                                         items={locationsWithFullNames} 
                                                         value={scannedLocation} 
                                                         onChange={setScannedLocation} 
-                                                        placeholder="Buscar o editar ubicación..." 
+                                                        placeholder={scannedLocation ? "Buscar o editar ubicación..." : "Buscar o agregar ubicación..."} 
                                                         showFullNames={true}
                                                     />
                                                 </div>
@@ -3944,50 +3957,28 @@
                                                     <Icons.Map width="20" height="20" />
                                                 </button>
                                             </div>
-                                            {isSelectingLocationFromMap && (
-                                                <div className="mt-2 p-2 bg-yellow-100 border border-yellow-400 rounded-lg text-sm text-yellow-800">
-                                                    <p className="font-bold">Modo selección activo</p>
-                                                    <p>Haz clic en una zona del mapa para seleccionarla</p>
-                                                </div>
-                                            )}
                                         </div>
-                                    <div>
-                                        <label className="block text-sm font-bold mb-2 text-slate-700">Producto</label>
-                                        {scannedProduct ? (
+                                        
+                                        {/* TERCERA CAJA: CANTIDAD (EDITABLE) */}
+                                        <div>
+                                            <label className="block text-sm font-bold mb-2 text-slate-700">Cantidad</label>
                                             <input 
-                                                type="text" 
-                                                className="w-full p-3 border rounded-lg bg-slate-100" 
-                                                value={scannedProduct} 
-                                                readOnly
+                                                type="number" 
+                                                className="w-full p-3 border rounded-lg text-center text-2xl focus:ring-2 focus:ring-yellow-400 outline-none" 
+                                                value={scannedQuantity} 
+                                                onFocus={(e) => e.target.select()}
+                                                onChange={(e) => setScannedQuantity(e.target.value)} 
+                                                onKeyDown={(e) => {
+                                                    if (['e', 'E', '+', '-'].includes(e.key)) {
+                                                        e.preventDefault();
+                                                    }
+                                                    if (e.key === 'Enter') {
+                                                        handleSaveScanned();
+                                                    }
+                                                }}
+                                                autoFocus
                                             />
-                                        ) : (
-                                            <AutocompleteInput 
-                                                items={products} 
-                                                value={scannedProduct} 
-                                                onChange={setScannedProduct} 
-                                                placeholder="Buscar producto..." 
-                                            />
-                                        )}
-                                    </div>
-                                    <div>
-                                        <label className="block text-sm font-bold mb-2 text-slate-700">Cantidad</label>
-                                        <input 
-                                            type="number" 
-                                            className="w-full p-3 border rounded-lg text-center text-2xl focus:ring-2 focus:ring-yellow-400 outline-none" 
-                                            value={scannedQuantity} 
-                                            onFocus={(e) => e.target.select()}
-                                            onChange={(e) => setScannedQuantity(e.target.value)} 
-                                            onKeyDown={(e) => {
-                                                if (['e', 'E', '+', '-'].includes(e.key)) {
-                                                    e.preventDefault();
-                                                }
-                                                if (e.key === 'Enter') {
-                                                    handleSaveScanned();
-                                                }
-                                            }}
-                                            autoFocus
-                                        />
-                                    </div>
+                                        </div>
                                     
                                     <div className="flex gap-2 mt-4">
                                         <button 
