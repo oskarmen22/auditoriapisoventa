@@ -74,7 +74,7 @@
         };
 
         // --- URL DEL SCRIPT DE GOOGLE ---
-        const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzAQ-Bf_gnP6MDqb_9S1849qy8LLUZJUn_vtFvr4R3HCkJpkqFaUh4hUXflTIbAp_sV/exec"; 
+        const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxb2Iubp6zhPBgfhpWpwcs3xPA_8IHXPYk1iQwcIGprbetazzU6Os8f8hY2S_ZJ_y8o/exec"; 
 
         // --- ZONAS INICIALES ---
         const INITIAL_ZONES = [
@@ -1369,7 +1369,7 @@
         };
 
         // --- COMPONENTE DE ESCÁNER ---
-        const ScannerComponent = ({ activeTab }) => {
+        const ScannerComponent = ({ activeTab, onCodeScanned }) => {
             const videoRef = React.useRef(null);
             const streamRef = React.useRef(null);
             const codeReaderRef = React.useRef(null);
@@ -1606,6 +1606,10 @@
                     hasScannedRef.current = true;
                     setIsDetecting(false);
                     setDetectedCode('');
+                    // Llamar al callback para buscar en la base de datos
+                    if (onCodeScanned) {
+                        onCodeScanned(detectedCode);
+                    }
                 }
             };
 
@@ -1654,6 +1658,10 @@
                                 vibrate();
                                 hasScannedRef.current = true;
                                 setIsScanning(false);
+                                // Llamar al callback para buscar en la base de datos
+                                if (onCodeScanned) {
+                                    onCodeScanned(code);
+                                }
                                 return;
                             }
                         } catch (error) {
@@ -3001,6 +3009,13 @@
             const [searchTerm, setSearchTerm] = React.useState('');
             const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = React.useState(false);
             
+            // Estados para modal de escaneo
+            const [isScannerModalOpen, setIsScannerModalOpen] = React.useState(false);
+            const [scannedLocation, setScannedLocation] = React.useState('');
+            const [scannedProduct, setScannedProduct] = React.useState('');
+            const [scannedQuantity, setScannedQuantity] = React.useState('');
+            const [isSearchingCode, setIsSearchingCode] = React.useState(false);
+            
             const quantityInputRef = React.useRef(null);
             const productInputRef = React.useRef(null);
             
@@ -3342,6 +3357,78 @@
                 });
             };
 
+
+            // Función para buscar código en la base de datos
+            const searchCodeInDatabase = async (code) => {
+                setIsSearchingCode(true);
+                try {
+                    const response = await fetch(APPS_SCRIPT_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            action: 'searchCode',
+                            code: code
+                        })
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (data.status === 'success') {
+                        // Abrir modal con los datos encontrados
+                        setScannedLocation(data.ubicacion || '');
+                        setScannedProduct(data.producto || '');
+                        setScannedQuantity('');
+                        setIsScannerModalOpen(true);
+                    } else {
+                        alert('Código no encontrado en la base de datos');
+                    }
+                } catch (error) {
+                    console.error('Error buscando código:', error);
+                    alert('Error al buscar el código en la base de datos');
+                } finally {
+                    setIsSearchingCode(false);
+                }
+            };
+
+            // Handler cuando se escanea un código
+            const handleCodeScanned = (code) => {
+                searchCodeInDatabase(code);
+            };
+
+            // Guardar datos del escáner
+            const handleSaveScanned = () => {
+                if (!scannedLocation || !scannedProduct || !scannedQuantity) {
+                    return alert("Faltan datos");
+                }
+                
+                // Reconstruir producto completo si es necesario
+                let productToSave = scannedProduct;
+                if (nameToFullProductMap.has(scannedProduct)) {
+                    productToSave = nameToFullProductMap.get(scannedProduct);
+                }
+                
+                const timestamp = Date.now();
+                const payload = {
+                    id: timestamp,
+                    location: scannedLocation,
+                    product: productToSave,
+                    quantity: scannedQuantity,
+                    timestamp: timestamp,
+                    user: currentUser
+                };
+                
+                // Agregar a la cola de guardado
+                setSaveQueue(prev => [...prev, payload]);
+                setPendingVerification(prev => [...prev, scannedLocation]);
+                
+                // Cerrar modal
+                setIsScannerModalOpen(false);
+                setScannedLocation('');
+                setScannedProduct('');
+                setScannedQuantity('');
+                
+                addLog(`Guardado desde escáner: ${scannedLocation}`);
+            };
 
             const handleLocationClick = (locName) => {
                 addLog(`Abriendo: ${locName}`);
@@ -3716,7 +3803,7 @@
                         </div>
 
                         <div className={`h-full overflow-hidden relative ${activeTab === 'scanner' ? 'block' : 'hidden'}`}>
-                            <ScannerComponent />
+                            <ScannerComponent activeTab={activeTab} onCodeScanned={handleCodeScanned} />
                         </div>
                         
                         {isDebugMode && <DebugConsole logs={logs} />}
@@ -3727,6 +3814,82 @@
                         <button onClick={() => setActiveTab('places')} className={`flex flex-col items-center p-2 rounded-lg w-20 transition-colors ${activeTab === 'places' ? 'text-red-600' : 'text-slate-400 hover:text-slate-600'}`}><Icons.List /><span className="text-xs font-medium">Lista</span></button>
                         <button onClick={() => setActiveTab('scanner')} className={`flex flex-col items-center p-2 rounded-lg w-20 transition-colors ${activeTab === 'scanner' ? 'text-red-600' : 'text-slate-400 hover:text-slate-600'}`}><Icons.Scanner /><span className="text-xs font-medium">Escáner</span></button>
                     </nav>
+
+                    {/* Modal de escaneo */}
+                    <Modal isOpen={isScannerModalOpen} onClose={() => setIsScannerModalOpen(false)} title="Auditar desde Escáner" align="top">
+                        <div className="space-y-5">
+                            {isSearchingCode && (
+                                <div className="text-center py-4">
+                                    <p className="text-slate-600">Buscando código en la base de datos...</p>
+                                </div>
+                            )}
+                            {!isSearchingCode && (
+                                <>
+                                    <div>
+                                        <label className="block text-sm font-bold mb-2 text-slate-700">Ubicación</label>
+                                        <input 
+                                            type="text" 
+                                            className="w-full p-3 border rounded-lg bg-slate-100" 
+                                            value={scannedLocation} 
+                                            readOnly
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-bold mb-2 text-slate-700">Producto</label>
+                                        {scannedProduct ? (
+                                            <input 
+                                                type="text" 
+                                                className="w-full p-3 border rounded-lg bg-slate-100" 
+                                                value={scannedProduct} 
+                                                readOnly
+                                            />
+                                        ) : (
+                                            <AutocompleteInput 
+                                                items={products} 
+                                                value={scannedProduct} 
+                                                onChange={setScannedProduct} 
+                                                placeholder="Buscar producto..." 
+                                            />
+                                        )}
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-bold mb-2 text-slate-700">Cantidad</label>
+                                        <input 
+                                            type="number" 
+                                            className="w-full p-3 border rounded-lg text-center text-2xl focus:ring-2 focus:ring-yellow-400 outline-none" 
+                                            value={scannedQuantity} 
+                                            onFocus={(e) => e.target.select()}
+                                            onChange={(e) => setScannedQuantity(e.target.value)} 
+                                            onKeyDown={(e) => {
+                                                if (['e', 'E', '+', '-'].includes(e.key)) {
+                                                    e.preventDefault();
+                                                }
+                                                if (e.key === 'Enter') {
+                                                    handleSaveScanned();
+                                                }
+                                            }}
+                                            autoFocus
+                                        />
+                                    </div>
+                                    
+                                    <div className="flex gap-2 mt-4">
+                                        <button 
+                                            onClick={handleSaveScanned} 
+                                            className="flex-1 bg-red-600 text-white font-bold py-3 rounded-lg hover:bg-red-700 active:scale-95 transition-transform"
+                                        >
+                                            Confirmar
+                                        </button>
+                                        <button 
+                                            onClick={() => setIsScannerModalOpen(false)} 
+                                            className="px-4 bg-slate-200 text-slate-700 font-bold py-3 rounded-lg hover:bg-slate-300 active:scale-95 transition-transform"
+                                        >
+                                            Cancelar
+                                        </button>
+                                    </div>
+                                </>
+                            )}
+                        </div>
+                    </Modal>
 
                     <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={`Auditar: ${selectedLocation}`} align="top">
                         <div className="space-y-5">
