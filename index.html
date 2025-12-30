@@ -74,7 +74,7 @@
         };
 
         // --- URL DEL SCRIPT DE GOOGLE ---
-        const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzKNt6PolgswFAKYbEKcrj7FHu0P4mDDH0mCmGZP5P2PQVUpPyrL650epGk50sc0eV5/exec"; 
+        const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwrrT9_bEL1NQYux4VZHMBxD0MxHcmXtH47Xdco8hdiDvnYRJFNmy2eVEv7uaCogAeV/exec"; 
 
         // --- ZONAS INICIALES ---
         const INITIAL_ZONES = [
@@ -1409,9 +1409,23 @@
                             codeReaderRef.current = new window.ZXing.BrowserMultiFormatReader();
                         }
                         startCamera();
+                    } else if (streamRef.current && streamRef.current.active) {
+                        // Si ya tenemos un stream activo, solo reanudar el video
+                        const video = videoRef.current;
+                        if (video) {
+                            video.srcObject = streamRef.current;
+                            video.play().catch(err => console.error('Error playing video:', err));
+                            setIsCameraActive(true);
+                        }
                     }
                 } else {
-                    if (isCameraActive) {
+                    // Cuando se sale de la pestaña, pausar el video pero NO detener el stream
+                    // Esto evita que se pida permiso de nuevo cuando se vuelve a entrar
+                    if (videoRef.current && streamRef.current && streamRef.current.active) {
+                        videoRef.current.pause();
+                        setIsCameraActive(false);
+                    } else if (isCameraActive) {
+                        // Solo si no hay stream activo, detener completamente
                         stopCamera();
                     }
                 }
@@ -1476,7 +1490,16 @@
                     const video = videoRef.current;
                     if (!video) return;
 
-                    // Obtener stream de la cámara
+                    // Si ya tenemos un stream activo, solo reanudar el video
+                    if (streamRef.current && streamRef.current.active) {
+                        video.srcObject = streamRef.current;
+                        await video.play();
+                        setIsCameraActive(true);
+                        setTimeLeft(30);
+                        return;
+                    }
+
+                    // Obtener stream de la cámara (solo si no tenemos uno activo)
                     const stream = await navigator.mediaDevices.getUserMedia({
                         video: {
                             facingMode: 'environment', // Cámara trasera
@@ -1492,7 +1515,11 @@
                     setTimeLeft(30);
                 } catch (error) {
                     console.error('Error accessing camera:', error);
-                    alert('No se pudo acceder a la cámara. Por favor, permite el acceso a la cámara.');
+                    // Si el error es de permiso denegado, el navegador ya lo recordará
+                    // Solo mostrar alerta si es un error diferente
+                    if (error.name !== 'NotAllowedError' && error.name !== 'PermissionDeniedError') {
+                        alert('No se pudo acceder a la cámara. Por favor, permite el acceso a la cámara.');
+                    }
                 }
             };
 
@@ -2137,7 +2164,7 @@
             );
         };
 
-        const MapEditor = ({ onLocationClick, auditedLocations, locationsList, isDebugMode, addLog, auditLog, focusTarget, pendingLocations, deletingLocations, currentUser, currentView, setCurrentView, isEditorMode, setIsEditorMode }) => {
+        const MapEditor = ({ onLocationClick, auditedLocations, locationsList, isDebugMode, addLog, auditLog, focusTarget, pendingLocations, deletingLocations, currentUser, currentView, setCurrentView, isEditorMode, setIsEditorMode, isSelectingLocationFromMap }) => {
             // Asegurar que currentView tenga un valor por defecto
             const view = currentView || 'PLANO';
             
@@ -2409,7 +2436,26 @@
             // Función para manejar clic en zona - si es CHIQUILLADAS, cambiar a vista PLANOGRAMA
             const handleZoneClick = (zoneName) => {
                 const upperName = zoneName.toUpperCase();
-                if (upperName === "CHIQUILLADAS") {
+                
+                // Si estamos en modo selección desde mapa (para el escáner)
+                if (isSelectingLocationFromMap) {
+                    // CHIQUILLADAS y MUESTRARIO NO son seleccionables, solo cambian la vista
+                    if (upperName === "CHIQUILLADAS" || upperName === "MUESTRARIO") {
+                        // Cambiar a vista PLANOGRAMA sin seleccionar como ubicación
+                        if (setCurrentView) {
+                            setCurrentView("PLANOGRAMA");
+                        } else {
+                            console.error('setCurrentView no está definido');
+                        }
+                        return; // No seleccionar, solo cambiar vista
+                    }
+                    // Para otras zonas, seleccionar como ubicación
+                    onLocationClick(zoneName);
+                    return;
+                }
+                
+                // Comportamiento normal cuando NO estamos en modo selección
+                if (upperName === "CHIQUILLADAS" || upperName === "MUESTRARIO") {
                     // Cambiar a vista PLANOGRAMA sin recargar la página
                     if (setCurrentView) {
                         setCurrentView("PLANOGRAMA");
@@ -3015,6 +3061,7 @@
             const [scannedProduct, setScannedProduct] = React.useState('');
             const [scannedQuantity, setScannedQuantity] = React.useState('');
             const [isSearchingCode, setIsSearchingCode] = React.useState(false);
+            const [isSelectingLocationFromMap, setIsSelectingLocationFromMap] = React.useState(false);
             
             const quantityInputRef = React.useRef(null);
             const productInputRef = React.useRef(null);
@@ -3448,6 +3495,15 @@
             };
 
             const handleLocationClick = (locName) => {
+                // Si estamos en modo selección desde mapa (para el escáner), copiar el nombre y cerrar el modo
+                if (isSelectingLocationFromMap) {
+                    setScannedLocation(locName);
+                    setIsSelectingLocationFromMap(false);
+                    setActiveTab('scanner'); // Volver a la pestaña del escáner
+                    setIsScannerModalOpen(true); // Reabrir el modal con los datos
+                    return;
+                }
+                
                 addLog(`Abriendo: ${locName}`);
                 setSelectedLocation(locName);
                 const existingEntry = auditLog.find(entry => entry.location === locName);
@@ -3768,6 +3824,7 @@
                                         setCurrentView={setCurrentView}
                                         isEditorMode={isEditorMode}
                                         setIsEditorMode={setIsEditorMode}
+                                        isSelectingLocationFromMap={isSelectingLocationFromMap}
                                     />
                                 );
                             })()}
@@ -3826,31 +3883,74 @@
                         {isDebugMode && <DebugConsole logs={logs} />}
                     </main>
 
+                    {/* Indicador de modo selección desde mapa */}
+                    {isSelectingLocationFromMap && (
+                        <div className="fixed top-20 left-1/2 transform -translate-x-1/2 z-50 bg-yellow-500 text-white px-6 py-3 rounded-lg shadow-xl border-2 border-yellow-600">
+                            <div className="flex items-center gap-3">
+                                <Icons.Map width="24" height="24" />
+                                <div>
+                                    <p className="font-bold text-lg">Selecciona una zona del mapa</p>
+                                    <p className="text-sm opacity-90">Haz clic en cualquier zona para seleccionarla</p>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
                     <nav className="bg-white border-t border-slate-200 flex justify-around p-2 pb-safe shadow-lg z-20 shrink-0">
                         <button onClick={() => setActiveTab('map')} className={`flex flex-col items-center p-2 rounded-lg w-20 transition-colors ${activeTab === 'map' ? 'text-red-600' : 'text-slate-400 hover:text-slate-600'}`}><Icons.Map /><span className="text-xs font-medium">{currentView === 'PLANOGRAMA' ? 'PLANOGRAMA' : 'Plano'}</span></button>
                         <button onClick={() => setActiveTab('places')} className={`flex flex-col items-center p-2 rounded-lg w-20 transition-colors ${activeTab === 'places' ? 'text-red-600' : 'text-slate-400 hover:text-slate-600'}`}><Icons.List /><span className="text-xs font-medium">Lista</span></button>
                         <button onClick={() => setActiveTab('scanner')} className={`flex flex-col items-center p-2 rounded-lg w-20 transition-colors ${activeTab === 'scanner' ? 'text-red-600' : 'text-slate-400 hover:text-slate-600'}`}><Icons.Scanner /><span className="text-xs font-medium">Escáner</span></button>
                     </nav>
 
-                    {/* Modal de escaneo */}
-                    <Modal isOpen={isScannerModalOpen} onClose={() => setIsScannerModalOpen(false)} title="Auditar desde Escáner" align="top">
+                    {/* Modal de escaneo - Solo mostrar si no estamos seleccionando desde el mapa */}
+                    <Modal isOpen={isScannerModalOpen && !isSelectingLocationFromMap} onClose={() => {
+                        setIsScannerModalOpen(false);
+                        setIsSelectingLocationFromMap(false);
+                    }} title="Auditar desde Escáner" align="top">
                         <div className="space-y-5">
                             {isSearchingCode && (
                                 <div className="text-center py-4">
                                     <p className="text-slate-600">Buscando código en la base de datos...</p>
                                 </div>
                             )}
-                            {!isSearchingCode && (
-                                <>
-                                    <div>
-                                        <label className="block text-sm font-bold mb-2 text-slate-700">Ubicación</label>
-                                        <input 
-                                            type="text" 
-                                            className="w-full p-3 border rounded-lg bg-slate-100" 
-                                            value={scannedLocation} 
-                                            readOnly
-                                        />
-                                    </div>
+                            {!isSearchingCode && (() => {
+                                // Crear lista de ubicaciones con nombres completos para el modal
+                                const allZoneNames = [...INITIAL_ZONES, ...INITIAL_ZONES_PLANOGRAMA].map(z => z.name).filter(Boolean);
+                                const locationsWithFullNames = [...new Set([...allZoneNames, ...locations])];
+                                
+                                return (
+                                    <>
+                                        <div>
+                                            <label className="block text-sm font-bold mb-2 text-slate-700">Ubicación</label>
+                                            <div className="flex gap-2">
+                                                <div className="flex-1">
+                                                    <AutocompleteInput 
+                                                        items={locationsWithFullNames} 
+                                                        value={scannedLocation} 
+                                                        onChange={setScannedLocation} 
+                                                        placeholder="Buscar o editar ubicación..." 
+                                                        showFullNames={true}
+                                                    />
+                                                </div>
+                                                <button
+                                                    onClick={() => {
+                                                        setIsSelectingLocationFromMap(true);
+                                                        setIsScannerModalOpen(false); // Cerrar el modal temporalmente
+                                                        setActiveTab('map');
+                                                    }}
+                                                    className="bg-red-600 text-white p-3 rounded-lg hover:bg-red-700 active:scale-95 transition-transform flex items-center justify-center shrink-0"
+                                                    title="Seleccionar ubicación desde el mapa"
+                                                >
+                                                    <Icons.Map width="20" height="20" />
+                                                </button>
+                                            </div>
+                                            {isSelectingLocationFromMap && (
+                                                <div className="mt-2 p-2 bg-yellow-100 border border-yellow-400 rounded-lg text-sm text-yellow-800">
+                                                    <p className="font-bold">Modo selección activo</p>
+                                                    <p>Haz clic en una zona del mapa para seleccionarla</p>
+                                                </div>
+                                            )}
+                                        </div>
                                     <div>
                                         <label className="block text-sm font-bold mb-2 text-slate-700">Producto</label>
                                         {scannedProduct ? (
@@ -3904,7 +4004,8 @@
                                         </button>
                                     </div>
                                 </>
-                            )}
+                                );
+                            })()}
                         </div>
                     </Modal>
 
