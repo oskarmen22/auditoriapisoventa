@@ -74,7 +74,7 @@
         };
 
         // --- URL DEL SCRIPT DE GOOGLE ---
-        const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbznDeQwJNuz1iWz7Y8tXSZ3wyyz50TMSpKTQ6vmsnapR5Qexnk-6TKMspq-rvDZel78/exec"; 
+        const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzKNt6PolgswFAKYbEKcrj7FHu0P4mDDH0mCmGZP5P2PQVUpPyrL650epGk50sc0eV5/exec"; 
 
         // --- ZONAS INICIALES ---
         const INITIAL_ZONES = [
@@ -3362,16 +3362,24 @@
             const searchCodeInDatabase = async (code) => {
                 setIsSearchingCode(true);
                 try {
+                    // Limpiar el código: quitar espacios y normalizar
+                    const cleanCode = String(code || '').trim();
+                    console.log('🔍 Buscando código:', cleanCode);
+                    
+                    // Usar el mismo método que funciona para otras acciones (sin headers para evitar CORS)
+                    const payload = {
+                        action: 'searchCode',
+                        code: cleanCode
+                    };
+                    
                     const response = await fetch(APPS_SCRIPT_URL, {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            action: 'searchCode',
-                            code: code
-                        })
+                        credentials: 'omit',
+                        body: JSON.stringify(payload)
                     });
                     
                     const data = await response.json();
+                    console.log('📥 Respuesta del servidor:', data);
                     
                     if (data.status === 'success') {
                         // Abrir modal con los datos encontrados
@@ -3380,11 +3388,20 @@
                         setScannedQuantity('');
                         setIsScannerModalOpen(true);
                     } else {
-                        alert('Código no encontrado en la base de datos');
+                        // Mostrar mensaje más detallado si hay información de debug
+                        let mensaje = 'Código no encontrado en la base de datos';
+                        if (data.debug) {
+                            console.log('🐛 Debug info:', data.debug);
+                            mensaje += `\n\nCódigo buscado: "${data.debug.codigoBuscado}"\nTotal de códigos en BD: ${data.debug.totalCodigos}`;
+                            if (data.debug.primerosCodigos && data.debug.primerosCodigos.length > 0) {
+                                mensaje += `\nPrimeros códigos en BD:\n${data.debug.primerosCodigos.join('\n')}`;
+                            }
+                        }
+                        alert(mensaje);
                     }
                 } catch (error) {
-                    console.error('Error buscando código:', error);
-                    alert('Error al buscar el código en la base de datos');
+                    console.error('❌ Error buscando código:', error);
+                    alert('Error al buscar el código en la base de datos: ' + error.message);
                 } finally {
                     setIsSearchingCode(false);
                 }
