@@ -1503,6 +1503,12 @@
             const visualDetectionIntervalRef = React.useRef(null); // Para detección visual continua
             const isScanningActiveRef = React.useRef(false);
             const cameraPermissionGrantedRef = React.useRef(false);
+            // Variables para detección de pistola escáner HID
+            const scannerInputTimeoutRef = React.useRef(null);
+            const lastInputTimeRef = React.useRef(0);
+            const scannerBufferRef = React.useRef('');
+            // Memoria local para códigos escaneados (evitar búsquedas repetidas en modo automático)
+            const scannedCodesMemoryRef = React.useRef(new Set());
 
             // Verificar permisos de cámara guardados al iniciar
             React.useEffect(() => {
@@ -1578,20 +1584,35 @@
 
             // Escaneo automático cuando está activo
             React.useEffect(() => {
-                if (isCameraActive && isAutoMode && !isPressed && !hasScannedRef.current) {
-                    autoScanIntervalRef.current = setInterval(() => {
+                // Limpiar intervalo anterior si existe
+                if (autoScanIntervalRef.current) {
+                    clearInterval(autoScanIntervalRef.current);
+                    autoScanIntervalRef.current = null;
+                }
+
+                if (isCameraActive && isAutoMode && !isPressed) {
+                    // Función para iniciar escaneo automático
+                    const startAutoScan = () => {
+                        // Escanear inmediatamente la primera vez
                         scanCenterArea(true);
-                    }, 300);
-                } else {
-                    if (autoScanIntervalRef.current) {
-                        clearInterval(autoScanIntervalRef.current);
-                        autoScanIntervalRef.current = null;
-                    }
+                        
+                        // Luego escanear cada 300ms
+                        autoScanIntervalRef.current = setInterval(() => {
+                            // Verificar que aún estamos en modo automático y la cámara está activa
+                            if (isCameraActive && isAutoMode && !isPressed) {
+                                scanCenterArea(true);
+                            }
+                        }, 300);
+                    };
+                    
+                    // Iniciar escaneo automático
+                    startAutoScan();
                 }
 
                 return () => {
                     if (autoScanIntervalRef.current) {
                         clearInterval(autoScanIntervalRef.current);
+                        autoScanIntervalRef.current = null;
                     }
                 };
             }, [isCameraActive, isAutoMode, isPressed]);
@@ -1679,6 +1700,8 @@
                 setCurrentDetectedCode('');
                 setIsTorchOn(false);
                 hasScannedRef.current = false;
+                // Limpiar memoria de códigos escaneados al detener la cámara
+                scannedCodesMemoryRef.current.clear();
                 if (scanIntervalRef.current) {
                     clearInterval(scanIntervalRef.current);
                     scanIntervalRef.current = null;
@@ -1816,16 +1839,34 @@
             // Escanear área central con mejor procesamiento
             const scanCenterArea = async (isAuto = false) => {
                 if (!isCameraActive || !videoRef.current || !codeReaderRef.current) return;
-                if (isScanningActiveRef.current) return;
+                
+                // En modo manual, no escanear si ya está escaneando
+                if (isScanningActiveRef.current && !isAuto) return;
+                
+                // En modo automático, permitir escanear incluso si está activo (pero con un pequeño delay)
+                // Esto permite escaneo continuo más rápido
+                if (isScanningActiveRef.current && isAuto) {
+                    // Si está escaneando, esperar un poco pero no bloquear completamente
+                    // Permitir que el escaneo actual termine
+                    return;
+                }
+                
+                // En modo manual, no escanear si ya se escaneó
                 if (hasScannedRef.current && !isAuto) return;
 
                 isScanningActiveRef.current = true;
+                
+                // Timeout de seguridad para resetear isScanningActiveRef si algo falla
+                const safetyTimeout = setTimeout(() => {
+                    isScanningActiveRef.current = false;
+                }, 2000);
 
                 try {
                     const codeReader = codeReaderRef.current;
                     const video = videoRef.current;
                     
                     if (!video.videoWidth || !video.videoHeight) {
+                        clearTimeout(safetyTimeout);
                         isScanningActiveRef.current = false;
                         return;
                     }
@@ -1872,12 +1913,37 @@
                     if (result) {
                         const code = result.getText();
                         
-                        // Evitar escanear el mismo código repetidamente
-                        if (code === lastScannedCode && isAuto) {
+                        // En modo automático, verificar si el código ya fue escaneado recientemente
+                        if (isAuto) {
+                            // Si el código ya está en la memoria, ignorarlo (no buscar en BD)
+                            if (scannedCodesMemoryRef.current.has(code)) {
+                                clearTimeout(safetyTimeout);
+                                isScanningActiveRef.current = false;
+                                // Mostrar que está detectado pero no buscar
+                                setIsDetecting(true);
+                                setTimeout(() => {
+                                    setIsDetecting(false);
+                                }, 500);
+                                return;
+                            }
+                            
+                            // Si es un código nuevo, agregarlo a la memoria
+                            scannedCodesMemoryRef.current.add(code);
+                            
+                            // Limpiar códigos antiguos después de 30 segundos (evitar que la memoria crezca indefinidamente)
+                            setTimeout(() => {
+                                scannedCodesMemoryRef.current.delete(code);
+                            }, 30000);
+                        }
+                        
+                        // En modo manual, verificar si es el mismo código que se acaba de escanear
+                        if (!isAuto && code === lastScannedCode && hasScannedRef.current) {
+                            clearTimeout(safetyTimeout);
                             isScanningActiveRef.current = false;
                             return;
                         }
 
+                        // Si es un código nuevo o no se ha escaneado recientemente, procesarlo
                         setScannedCode(code);
                         setLastScannedCode(code);
                         playBeep();
@@ -1886,24 +1952,31 @@
                         setIsScanning(false);
                         setIsDetecting(true);
                         
-                        // Buscar en base de datos
+                        // Buscar en base de datos solo si es un código nuevo (en modo automático ya se verificó arriba)
                         if (onCodeScanned) {
                             onCodeScanned(code);
                         }
                         
-                        // En modo automático, resetear después de 2 segundos
+                        // En modo automático, resetear después de 1.5 segundos para permitir escaneo continuo
                         if (isAuto) {
                             setTimeout(() => {
                                 hasScannedRef.current = false;
                                 setIsDetecting(false);
-                            }, 2000);
+                            }, 1500);
                         }
                     } else {
                         setIsDetecting(false);
                     }
                 } catch (error) {
+                    // Silenciar errores de NotFoundException (es normal cuando no hay código)
+                    if (error.name !== 'NotFoundException' && error.message !== 'No QR code found' && error.message !== 'Image load timeout') {
+                        console.error('Error scanning:', error);
+                    }
                     setIsDetecting(false);
                 } finally {
+                    // Limpiar timeout de seguridad
+                    clearTimeout(safetyTimeout);
+                    // Siempre resetear para permitir el siguiente escaneo
                     isScanningActiveRef.current = false;
                 }
             };
@@ -1958,31 +2031,200 @@
                 }
             };
 
-            // Detectar teclado físico y evitar teclado virtual
+            // Mantener el input siempre enfocado cuando está en la pestaña de escáner
             React.useEffect(() => {
+                if (activeTab !== 'scanner') return;
+
                 const input = manualInputRef.current;
                 if (!input) return;
 
-                // Manejar eventos de teclado físico
-                const handleKeyDown = (e) => {
-                    if (e.key === 'Enter' && manualCode.trim()) {
-                        e.preventDefault();
-                        handleManualSearch(e);
+                // Función para enfocar el input
+                const focusInput = () => {
+                    if (input && document.activeElement !== input) {
+                        input.focus();
                     }
                 };
 
+                // Enfocar inmediatamente y luego cada vez que se pierda el foco
+                focusInput();
+                
+                // Enfocar cuando se hace click en cualquier parte del componente (excepto en otros inputs)
+                const handleClick = (e) => {
+                    // Si no se hace click en un input o textarea, enfocar nuestro input
+                    if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA' && activeTab === 'scanner') {
+                        focusInput();
+                    }
+                };
+
+                // Enfocar cuando se presiona una tecla (captura global de teclado)
+                const handleKeyPress = (e) => {
+                    // Si no es un atajo de teclado (Ctrl, Alt, Meta) y estamos en la pestaña de escáner
+                    if (!e.ctrlKey && !e.altKey && !e.metaKey && activeTab === 'scanner') {
+                        // Si el input no está enfocado, enfocarlo
+                        if (document.activeElement !== input && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') {
+                            focusInput();
+                        }
+                    }
+                };
+
+                // Enfocar periódicamente para asegurar que siempre esté activo
+                const focusInterval = setInterval(() => {
+                    if (activeTab === 'scanner' && document.activeElement !== input) {
+                        focusInput();
+                    }
+                }, 500); // Verificar cada 500ms
+
+                // Observar cuando se pierde el foco
+                const handleBlur = () => {
+                    // Re-enfocar después de un pequeño delay
+                    setTimeout(() => {
+                        if (activeTab === 'scanner') {
+                            focusInput();
+                        }
+                    }, 100);
+                };
+
+                input.addEventListener('blur', handleBlur);
+                document.addEventListener('click', handleClick);
+                document.addEventListener('keydown', handleKeyPress);
+
+                return () => {
+                    clearInterval(focusInterval);
+                    input.removeEventListener('blur', handleBlur);
+                    document.removeEventListener('click', handleClick);
+                    document.removeEventListener('keydown', handleKeyPress);
+                };
+            }, [activeTab]);
+
+            // Detectar pistola escáner HID (dispositivo que actúa como teclado)
+            React.useEffect(() => {
+                const input = manualInputRef.current;
+                if (!input || activeTab !== 'scanner') return;
+
+                // Limpiar timeout anterior si existe
+                const clearScannerTimeout = () => {
+                    if (scannerInputTimeoutRef.current) {
+                        clearTimeout(scannerInputTimeoutRef.current);
+                        scannerInputTimeoutRef.current = null;
+                    }
+                };
+
+                // Procesar código escaneado
+                const processScannedCode = (code) => {
+                    if (code && code.trim()) {
+                        const trimmedCode = code.trim();
+                        setScannedCode(trimmedCode);
+                        setManualCode(''); // Limpiar el input
+                        scannerBufferRef.current = ''; // Limpiar buffer
+                        lastInputTimeRef.current = 0; // Resetear tiempo
+                        playBeep();
+                        vibrate();
+                        
+                        // Buscar en base de datos
+                        if (onCodeScanned) {
+                            onCodeScanned(trimmedCode);
+                        }
+                    }
+                };
+
+                // Manejar entrada de texto (detectar entrada rápida de pistola escáner)
+                const handleInput = (e) => {
+                    const currentTime = Date.now();
+                    const timeSinceLastInput = currentTime - lastInputTimeRef.current;
+                    const currentValue = e.target.value;
+                    const previousLength = scannerBufferRef.current.length;
+                    const newLength = currentValue.length;
+                    
+                    // Limpiar timeout anterior
+                    clearScannerTimeout();
+                    
+                    // Determinar si es entrada rápida (pistola escáner) o manual
+                    const isFastInput = timeSinceLastInput > 0 && timeSinceLastInput < 50 && newLength > previousLength;
+                    const isContinuousFastInput = timeSinceLastInput > 0 && timeSinceLastInput < 100 && newLength > previousLength;
+                    
+                    // Si la entrada es muy rápida (< 50ms entre caracteres), es definitivamente un escáner
+                    if (isFastInput || (isContinuousFastInput && newLength >= 5)) {
+                        // Es entrada rápida de escáner, actualizar buffer
+                        scannerBufferRef.current = currentValue;
+                        
+                        // Esperar un poco para ver si viene más texto o Enter
+                        // Si es entrada muy rápida, esperar menos tiempo (probablemente viene Enter)
+                        const timeoutDelay = isFastInput ? 100 : 150;
+                        
+                        scannerInputTimeoutRef.current = setTimeout(() => {
+                            const finalCode = input.value.trim();
+                            if (finalCode.length >= 3) {
+                                // Probablemente es un código escaneado sin Enter
+                                processScannedCode(finalCode);
+                            }
+                        }, timeoutDelay);
+                    } else if (newLength === 0) {
+                        // Si se borra el input, resetear todo
+                        scannerBufferRef.current = '';
+                        lastInputTimeRef.current = 0;
+                    } else {
+                        // Entrada normal de teclado o primera entrada
+                        scannerBufferRef.current = currentValue;
+                        
+                        // Para entrada manual, solo procesar automáticamente si es muy larga (más de 10 caracteres)
+                        // Esto evita que se active mientras el usuario está escribiendo
+                        if (newLength >= 10) {
+                            scannerInputTimeoutRef.current = setTimeout(() => {
+                                const finalCode = input.value.trim();
+                                // Solo procesar si no ha cambiado (el usuario terminó de escribir)
+                                if (finalCode.length >= 10 && finalCode === scannerBufferRef.current) {
+                                    processScannedCode(finalCode);
+                                }
+                            }, 800); // Para entrada manual, esperar 800ms sin cambios
+                        }
+                    }
+                    
+                    lastInputTimeRef.current = currentTime;
+                };
+
+                // Manejar tecla Enter (muchos escáneres envían Enter al final)
+                const handleKeyDown = (e) => {
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        clearScannerTimeout();
+                        
+                        const code = input.value.trim();
+                        if (code) {
+                            // Si hay código, procesarlo inmediatamente (pistola escáner o usuario presionó Enter)
+                            processScannedCode(code);
+                        }
+                    } else if (e.key === 'Backspace' || e.key === 'Delete') {
+                        // Si se borra, resetear tiempo para detectar nueva entrada
+                        lastInputTimeRef.current = 0;
+                        scannerBufferRef.current = input.value;
+                    } else if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+                        // Carácter normal, actualizar tiempo
+                        lastInputTimeRef.current = Date.now();
+                    }
+                };
+
+                // Manejar cambios en el input
+                const handleChange = (e) => {
+                    handleInput(e);
+                };
+
+                input.addEventListener('input', handleChange);
                 input.addEventListener('keydown', handleKeyDown);
 
                 return () => {
+                    input.removeEventListener('input', handleChange);
                     input.removeEventListener('keydown', handleKeyDown);
+                    clearScannerTimeout();
                 };
-            }, [manualCode]);
+            }, [manualCode, activeTab, onCodeScanned]);
 
             const toggleAutoMode = () => {
                 setIsAutoMode(!isAutoMode);
                 hasScannedRef.current = false;
                 setIsDetecting(false);
                 setCurrentDetectedCode('');
+                // Limpiar memoria de códigos escaneados al cambiar de modo
+                scannedCodesMemoryRef.current.clear();
             };
 
             return (
@@ -2028,12 +2270,19 @@
                                     value={manualCode}
                                     onChange={(e) => setManualCode(e.target.value)}
                                     onKeyDown={(e) => {
+                                        // Permitir que Enter busque manualmente también
                                         if (e.key === 'Enter') {
-                                            handleManualSearch(e);
+                                            e.preventDefault();
+                                            if (manualCode.trim()) {
+                                                handleManualSearch(e);
+                                            }
                                         }
                                     }}
-                                    placeholder="Ingresa código y presiona Enter"
+                                    placeholder="Escanea con pistola o ingresa código manualmente"
                                     inputMode="none"
+                                    autoFocus={activeTab === 'scanner'}
+                                    autoComplete="off"
+                                    spellCheck="false"
                                     className="flex-1 px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-red-500 outline-none text-slate-900 font-mono"
                                 />
                                 <button
