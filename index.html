@@ -1490,16 +1490,30 @@
             const [isPressed, setIsPressed] = React.useState(false);
             const [isDetecting, setIsDetecting] = React.useState(false);
             const [detectedCode, setDetectedCode] = React.useState('');
-            const [isAutoMode, setIsAutoMode] = React.useState(true); // Modo automático por defecto
+            const [isAutoMode, setIsAutoMode] = React.useState(false); // Modo automático desactivado por defecto
             const [isTorchOn, setIsTorchOn] = React.useState(false);
             const [torchSupported, setTorchSupported] = React.useState(false);
             const [manualCode, setManualCode] = React.useState('');
             const [lastScannedCode, setLastScannedCode] = React.useState('');
+            const [currentDetectedCode, setCurrentDetectedCode] = React.useState(''); // Código detectado visualmente
             const timerRef = React.useRef(null);
             const hasScannedRef = React.useRef(false);
             const scanIntervalRef = React.useRef(null);
             const autoScanIntervalRef = React.useRef(null);
+            const visualDetectionIntervalRef = React.useRef(null); // Para detección visual continua
             const isScanningActiveRef = React.useRef(false);
+            const cameraPermissionGrantedRef = React.useRef(false);
+
+            // Verificar permisos de cámara guardados al iniciar
+            React.useEffect(() => {
+                if (navigator.permissions) {
+                    navigator.permissions.query({ name: 'camera' }).then(result => {
+                        if (result.state === 'granted') {
+                            cameraPermissionGrantedRef.current = true;
+                        }
+                    }).catch(() => {});
+                }
+            }, []);
 
             // Inicializar ZXing cuando se monta el componente
             React.useEffect(() => {
@@ -1512,6 +1526,7 @@
                     if (timerRef.current) clearInterval(timerRef.current);
                     if (scanIntervalRef.current) clearInterval(scanIntervalRef.current);
                     if (autoScanIntervalRef.current) clearInterval(autoScanIntervalRef.current);
+                    if (visualDetectionIntervalRef.current) clearInterval(visualDetectionIntervalRef.current);
                 };
             }, []);
 
@@ -1540,6 +1555,26 @@
                     }
                 }
             }, [activeTab]);
+
+            // Detección visual continua (solo muestra verde, no captura)
+            React.useEffect(() => {
+                if (isCameraActive && !isAutoMode) {
+                    visualDetectionIntervalRef.current = setInterval(() => {
+                        detectCodeVisual();
+                    }, 300);
+                } else {
+                    if (visualDetectionIntervalRef.current) {
+                        clearInterval(visualDetectionIntervalRef.current);
+                        visualDetectionIntervalRef.current = null;
+                    }
+                }
+
+                return () => {
+                    if (visualDetectionIntervalRef.current) {
+                        clearInterval(visualDetectionIntervalRef.current);
+                    }
+                };
+            }, [isCameraActive, isAutoMode]);
 
             // Escaneo automático cuando está activo
             React.useEffect(() => {
@@ -1594,6 +1629,7 @@
                     video.srcObject = stream;
                     await video.play();
                     setIsCameraActive(true);
+                    cameraPermissionGrantedRef.current = true; // Guardar que se otorgaron permisos
                     checkTorchSupport();
                 } catch (error) {
                     console.error('Error accessing camera:', error);
@@ -1640,6 +1676,7 @@
                 setIsPressed(false);
                 setIsDetecting(false);
                 setDetectedCode('');
+                setCurrentDetectedCode('');
                 setIsTorchOn(false);
                 hasScannedRef.current = false;
                 if (scanIntervalRef.current) {
@@ -1649,6 +1686,10 @@
                 if (autoScanIntervalRef.current) {
                     clearInterval(autoScanIntervalRef.current);
                     autoScanIntervalRef.current = null;
+                }
+                if (visualDetectionIntervalRef.current) {
+                    clearInterval(visualDetectionIntervalRef.current);
+                    visualDetectionIntervalRef.current = null;
                 }
             };
 
@@ -1703,6 +1744,73 @@
                 }
                 
                 ctx.putImageData(imageData, 0, 0);
+            };
+
+            // Detección visual continua (solo muestra verde, no captura ni busca)
+            const detectCodeVisual = async () => {
+                if (!isCameraActive || !videoRef.current || !codeReaderRef.current) return;
+                if (isScanningActiveRef.current) return;
+
+                try {
+                    const codeReader = codeReaderRef.current;
+                    const video = videoRef.current;
+                    
+                    if (!video.videoWidth || !video.videoHeight) return;
+
+                    const videoWidth = video.videoWidth;
+                    const videoHeight = video.videoHeight;
+                    
+                    // Área central: 50% del tamaño menor, centrado
+                    const scanAreaSize = Math.min(videoWidth, videoHeight) * 0.5;
+                    const centerX = videoWidth / 2;
+                    const centerY = videoHeight / 2;
+                    const startX = centerX - scanAreaSize / 2;
+                    const startY = centerY - scanAreaSize / 2;
+
+                    // Crear canvas solo con el área central
+                    const canvas = document.createElement('canvas');
+                    canvas.width = scanAreaSize;
+                    canvas.height = scanAreaSize;
+                    const ctx = canvas.getContext('2d');
+                    
+                    // Dibujar área central
+                    ctx.drawImage(
+                        video, 
+                        startX, startY, scanAreaSize, scanAreaSize,
+                        0, 0, scanAreaSize, scanAreaSize
+                    );
+
+                    // Mejorar imagen para mejor detección
+                    enhanceImage(canvas, ctx);
+
+                    // Convertir a imagen
+                    const img = new Image();
+                    img.src = canvas.toDataURL('image/png');
+                    
+                    await new Promise((resolve, reject) => {
+                        img.onload = resolve;
+                        img.onerror = reject;
+                        setTimeout(() => reject(new Error('Image load timeout')), 300);
+                    });
+
+                    // Intentar decodificar
+                    const result = await codeReader.decodeFromImageElement(img);
+                    
+                    if (result) {
+                        const code = result.getText();
+                        setCurrentDetectedCode(code);
+                        setIsDetecting(true); // Mostrar rectángulo verde
+                    } else {
+                        setIsDetecting(false);
+                        setCurrentDetectedCode('');
+                    }
+                } catch (error) {
+                    // Silenciar errores de NotFoundException (es normal cuando no hay código)
+                    if (error.name !== 'NotFoundException' && error.message !== 'No QR code found') {
+                        setIsDetecting(false);
+                        setCurrentDetectedCode('');
+                    }
+                }
             };
 
             // Escanear área central con mejor procesamiento
@@ -1810,7 +1918,24 @@
                     setIsPressed(true);
                     hasScannedRef.current = false;
                     setIsScanning(true);
-                    scanCenterArea(false);
+                    // Si hay un código detectado visualmente, capturarlo
+                    if (currentDetectedCode) {
+                        const code = currentDetectedCode;
+                        setScannedCode(code);
+                        setLastScannedCode(code);
+                        playBeep();
+                        vibrate();
+                        hasScannedRef.current = true;
+                        setIsScanning(false);
+                        
+                        // Buscar en base de datos
+                        if (onCodeScanned) {
+                            onCodeScanned(code);
+                        }
+                    } else {
+                        // Intentar escanear si no hay código detectado
+                        scanCenterArea(false);
+                    }
                 }
             };
 
@@ -1833,10 +1958,31 @@
                 }
             };
 
+            // Detectar teclado físico y evitar teclado virtual
+            React.useEffect(() => {
+                const input = manualInputRef.current;
+                if (!input) return;
+
+                // Manejar eventos de teclado físico
+                const handleKeyDown = (e) => {
+                    if (e.key === 'Enter' && manualCode.trim()) {
+                        e.preventDefault();
+                        handleManualSearch(e);
+                    }
+                };
+
+                input.addEventListener('keydown', handleKeyDown);
+
+                return () => {
+                    input.removeEventListener('keydown', handleKeyDown);
+                };
+            }, [manualCode]);
+
             const toggleAutoMode = () => {
                 setIsAutoMode(!isAutoMode);
                 hasScannedRef.current = false;
                 setIsDetecting(false);
+                setCurrentDetectedCode('');
             };
 
             return (
@@ -1881,8 +2027,13 @@
                                     type="text"
                                     value={manualCode}
                                     onChange={(e) => setManualCode(e.target.value)}
-                                    onKeyPress={handleManualSearch}
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter') {
+                                            handleManualSearch(e);
+                                        }
+                                    }}
                                     placeholder="Ingresa código y presiona Enter"
+                                    inputMode="none"
                                     className="flex-1 px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-red-500 outline-none text-slate-900 font-mono"
                                 />
                                 <button
@@ -1909,29 +2060,28 @@
                             muted
                         />
                         
-                        {/* Área para modo manual */}
-                        {!isAutoMode && (
-                            <div
-                                className="absolute inset-0 z-20 touch-none"
-                                onTouchStart={handlePressStart}
-                                onTouchEnd={handlePressEnd}
-                                onMouseDown={handlePressStart}
-                                onMouseUp={handlePressEnd}
-                                onMouseLeave={handlePressEnd}
-                                style={{ 
-                                    backgroundColor: isPressed ? 'rgba(239, 68, 68, 0.1)' : 'transparent',
-                                    cursor: 'pointer'
-                                }}
-                            >
-                                {isPressed && (
-                                    <div className="absolute inset-0 flex items-center justify-center">
-                                        <div className="bg-red-600/20 border-4 border-red-600 rounded-full w-32 h-32 flex items-center justify-center animate-pulse">
-                                            <Icons.Scanner className="text-white" width="48" height="48" />
-                                        </div>
+                        {/* Área para modo manual - siempre activa para tocar */}
+                        <div
+                            className="absolute inset-0 z-20 touch-none"
+                            onTouchStart={handlePressStart}
+                            onTouchEnd={handlePressEnd}
+                            onMouseDown={handlePressStart}
+                            onMouseUp={handlePressEnd}
+                            onMouseLeave={handlePressEnd}
+                            style={{ 
+                                backgroundColor: isPressed ? 'rgba(239, 68, 68, 0.1)' : 'transparent',
+                                cursor: 'pointer',
+                                pointerEvents: isAutoMode ? 'none' : 'auto'
+                            }}
+                        >
+                            {isPressed && !isAutoMode && (
+                                <div className="absolute inset-0 flex items-center justify-center">
+                                    <div className="bg-red-600/20 border-4 border-red-600 rounded-full w-32 h-32 flex items-center justify-center animate-pulse">
+                                        <Icons.Scanner className="text-white" width="48" height="48" />
                                     </div>
-                                )}
-                            </div>
-                        )}
+                                </div>
+                            )}
+                        </div>
 
                         {/* Overlay de guía - ventana de lectura central */}
                         <div className="absolute inset-0 z-10 pointer-events-none">
@@ -1940,7 +2090,7 @@
                                     <div className="border-4 border-green-500 rounded-lg w-64 h-64 shadow-2xl bg-green-500/30 animate-pulse">
                                         <div className="absolute inset-0 flex items-center justify-center">
                                             <div className="bg-green-500 text-white px-4 py-2 rounded-lg font-bold text-sm shadow-lg">
-                                                ✓ {scannedCode ? 'Escaneado!' : 'Detectando...'}
+                                                ✓ {scannedCode ? 'Escaneado!' : 'Código Detectado'}
                                             </div>
                                         </div>
                                     </div>
@@ -1959,7 +2109,7 @@
                             {!isAutoMode && (
                                 <div className="absolute bottom-24 left-0 right-0 flex justify-center">
                                     <div className="bg-black/70 text-white px-4 py-2 rounded-lg text-sm font-bold">
-                                        Presiona para escanear
+                                        {isDetecting ? 'Toca para capturar' : 'Presiona para escanear'}
                                     </div>
                                 </div>
                             )}
