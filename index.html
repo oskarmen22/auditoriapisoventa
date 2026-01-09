@@ -1483,20 +1483,25 @@
             const videoRef = React.useRef(null);
             const streamRef = React.useRef(null);
             const codeReaderRef = React.useRef(null);
+            const manualInputRef = React.useRef(null);
             const [isScanning, setIsScanning] = React.useState(false);
             const [scannedCode, setScannedCode] = React.useState('');
-            const [timeLeft, setTimeLeft] = React.useState(30);
             const [isCameraActive, setIsCameraActive] = React.useState(false);
             const [isPressed, setIsPressed] = React.useState(false);
             const [isDetecting, setIsDetecting] = React.useState(false);
             const [detectedCode, setDetectedCode] = React.useState('');
+            const [isAutoMode, setIsAutoMode] = React.useState(true); // Modo automático por defecto
+            const [isTorchOn, setIsTorchOn] = React.useState(false);
+            const [torchSupported, setTorchSupported] = React.useState(false);
+            const [manualCode, setManualCode] = React.useState('');
+            const [lastScannedCode, setLastScannedCode] = React.useState('');
             const timerRef = React.useRef(null);
-            const countdownRef = React.useRef(null);
             const hasScannedRef = React.useRef(false);
             const scanIntervalRef = React.useRef(null);
-            const continuousScanRef = React.useRef(null);
+            const autoScanIntervalRef = React.useRef(null);
+            const isScanningActiveRef = React.useRef(false);
 
-            // Inicializar ZXing cuando se monta el componente (pero NO iniciar cámara)
+            // Inicializar ZXing cuando se monta el componente
             React.useEffect(() => {
                 if (window.ZXing) {
                     codeReaderRef.current = new window.ZXing.BrowserMultiFormatReader();
@@ -1505,9 +1510,8 @@
                 return () => {
                     stopCamera();
                     if (timerRef.current) clearInterval(timerRef.current);
-                    if (countdownRef.current) clearInterval(countdownRef.current);
                     if (scanIntervalRef.current) clearInterval(scanIntervalRef.current);
-                    if (continuousScanRef.current) clearInterval(continuousScanRef.current);
+                    if (autoScanIntervalRef.current) clearInterval(autoScanIntervalRef.current);
                 };
             }, []);
 
@@ -1520,7 +1524,6 @@
                         }
                         startCamera();
                     } else if (streamRef.current && streamRef.current.active) {
-                        // Si ya tenemos un stream activo, solo reanudar el video
                         const video = videoRef.current;
                         if (video) {
                             video.srcObject = streamRef.current;
@@ -1529,66 +1532,34 @@
                         }
                     }
                 } else {
-                    // Cuando se sale de la pestaña, pausar el video pero NO detener el stream
-                    // Esto evita que se pida permiso de nuevo cuando se vuelve a entrar
                     if (videoRef.current && streamRef.current && streamRef.current.active) {
                         videoRef.current.pause();
                         setIsCameraActive(false);
                     } else if (isCameraActive) {
-                        // Solo si no hay stream activo, detener completamente
                         stopCamera();
                     }
                 }
             }, [activeTab]);
 
-            // Escaneo continuo en segundo plano (solo detección, no captura)
+            // Escaneo automático cuando está activo
             React.useEffect(() => {
-                if (isCameraActive && !isPressed) {
-                    // Escanear continuamente cada 200ms para mayor sensibilidad
-                    continuousScanRef.current = setInterval(() => {
-                        detectCode();
-                    }, 200);
+                if (isCameraActive && isAutoMode && !isPressed && !hasScannedRef.current) {
+                    autoScanIntervalRef.current = setInterval(() => {
+                        scanCenterArea(true);
+                    }, 300);
                 } else {
-                    if (continuousScanRef.current) {
-                        clearInterval(continuousScanRef.current);
-                        continuousScanRef.current = null;
-                    }
-                    setIsDetecting(false);
-                    setDetectedCode('');
-                }
-
-                return () => {
-                    if (continuousScanRef.current) {
-                        clearInterval(continuousScanRef.current);
-                    }
-                };
-            }, [isCameraActive, isPressed]);
-
-            // Temporizador de cuenta regresiva
-            React.useEffect(() => {
-                if (isCameraActive && timeLeft > 0) {
-                    countdownRef.current = setInterval(() => {
-                        setTimeLeft(prev => {
-                            if (prev <= 1) {
-                                stopCamera();
-                                return 0;
-                            }
-                            return prev - 1;
-                        });
-                    }, 1000);
-                } else {
-                    if (countdownRef.current) {
-                        clearInterval(countdownRef.current);
-                        countdownRef.current = null;
+                    if (autoScanIntervalRef.current) {
+                        clearInterval(autoScanIntervalRef.current);
+                        autoScanIntervalRef.current = null;
                     }
                 }
 
                 return () => {
-                    if (countdownRef.current) {
-                        clearInterval(countdownRef.current);
+                    if (autoScanIntervalRef.current) {
+                        clearInterval(autoScanIntervalRef.current);
                     }
                 };
-            }, [isCameraActive, timeLeft]);
+            }, [isCameraActive, isAutoMode, isPressed]);
 
             const startCamera = async () => {
                 try {
@@ -1600,35 +1571,58 @@
                     const video = videoRef.current;
                     if (!video) return;
 
-                    // Si ya tenemos un stream activo, solo reanudar el video
                     if (streamRef.current && streamRef.current.active) {
                         video.srcObject = streamRef.current;
                         await video.play();
                         setIsCameraActive(true);
-                        setTimeLeft(30);
+                        checkTorchSupport();
                         return;
                     }
 
-                    // Obtener stream de la cámara (solo si no tenemos uno activo)
-                    const stream = await navigator.mediaDevices.getUserMedia({
+                    // Obtener stream de la cámara con soporte para linterna
+                    const constraints = {
                         video: {
-                            facingMode: 'environment', // Cámara trasera
-                            width: { ideal: 1280 },
-                            height: { ideal: 720 }
+                            facingMode: 'environment',
+                            width: { ideal: 1920 },
+                            height: { ideal: 1080 },
+                            torch: isTorchOn
                         }
-                    });
+                    };
 
+                    const stream = await navigator.mediaDevices.getUserMedia(constraints);
                     streamRef.current = stream;
                     video.srcObject = stream;
                     await video.play();
                     setIsCameraActive(true);
-                    setTimeLeft(30);
+                    checkTorchSupport();
                 } catch (error) {
                     console.error('Error accessing camera:', error);
-                    // Si el error es de permiso denegado, el navegador ya lo recordará
-                    // Solo mostrar alerta si es un error diferente
                     if (error.name !== 'NotAllowedError' && error.name !== 'PermissionDeniedError') {
                         alert('No se pudo acceder a la cámara. Por favor, permite el acceso a la cámara.');
+                    }
+                }
+            };
+
+            const checkTorchSupport = () => {
+                if (streamRef.current && streamRef.current.getVideoTracks().length > 0) {
+                    const track = streamRef.current.getVideoTracks()[0];
+                    const capabilities = track.getCapabilities ? track.getCapabilities() : {};
+                    setTorchSupported(capabilities.torch || false);
+                }
+            };
+
+            const toggleTorch = async () => {
+                if (!streamRef.current) return;
+                
+                const track = streamRef.current.getVideoTracks()[0];
+                if (track && track.getCapabilities && track.getCapabilities().torch) {
+                    try {
+                        await track.applyConstraints({
+                            advanced: [{ torch: !isTorchOn }]
+                        });
+                        setIsTorchOn(!isTorchOn);
+                    } catch (error) {
+                        console.error('Error toggling torch:', error);
                     }
                 }
             };
@@ -1646,14 +1640,15 @@
                 setIsPressed(false);
                 setIsDetecting(false);
                 setDetectedCode('');
+                setIsTorchOn(false);
                 hasScannedRef.current = false;
                 if (scanIntervalRef.current) {
                     clearInterval(scanIntervalRef.current);
                     scanIntervalRef.current = null;
                 }
-                if (continuousScanRef.current) {
-                    clearInterval(continuousScanRef.current);
-                    continuousScanRef.current = null;
+                if (autoScanIntervalRef.current) {
+                    clearInterval(autoScanIntervalRef.current);
+                    autoScanIntervalRef.current = null;
                 }
             };
 
@@ -1686,136 +1681,122 @@
                 }
             };
 
-            // Detección continua (solo detecta, no captura)
-            const detectCode = async () => {
-                if (!isCameraActive || !videoRef.current || !codeReaderRef.current || isPressed) return;
+            // Procesar imagen para mejorar detección (contraste, brillo)
+            const enhanceImage = (canvas, ctx) => {
+                const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                const data = imageData.data;
+                
+                // Aplicar mejoras de contraste y brillo
+                const contrast = 1.2;
+                const brightness = 10;
+                
+                for (let i = 0; i < data.length; i += 4) {
+                    // Aplicar contraste
+                    data[i] = Math.min(255, Math.max(0, (data[i] - 128) * contrast + 128));
+                    data[i + 1] = Math.min(255, Math.max(0, (data[i + 1] - 128) * contrast + 128));
+                    data[i + 2] = Math.min(255, Math.max(0, (data[i + 2] - 128) * contrast + 128));
+                    
+                    // Aplicar brillo
+                    data[i] = Math.min(255, Math.max(0, data[i] + brightness));
+                    data[i + 1] = Math.min(255, Math.max(0, data[i + 1] + brightness));
+                    data[i + 2] = Math.min(255, Math.max(0, data[i + 2] + brightness));
+                }
+                
+                ctx.putImageData(imageData, 0, 0);
+            };
+
+            // Escanear área central con mejor procesamiento
+            const scanCenterArea = async (isAuto = false) => {
+                if (!isCameraActive || !videoRef.current || !codeReaderRef.current) return;
+                if (isScanningActiveRef.current) return;
+                if (hasScannedRef.current && !isAuto) return;
+
+                isScanningActiveRef.current = true;
 
                 try {
                     const codeReader = codeReaderRef.current;
                     const video = videoRef.current;
                     
                     if (!video.videoWidth || !video.videoHeight) {
+                        isScanningActiveRef.current = false;
                         return;
                     }
 
-                    // Crear canvas para capturar frame
-                    const canvas = document.createElement('canvas');
-                    canvas.width = video.videoWidth;
-                    canvas.height = video.videoHeight;
-                    const ctx = canvas.getContext('2d');
-                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                    const videoWidth = video.videoWidth;
+                    const videoHeight = video.videoHeight;
+                    
+                    // Área central: 50% del tamaño menor, centrado
+                    const scanAreaSize = Math.min(videoWidth, videoHeight) * 0.5;
+                    const centerX = videoWidth / 2;
+                    const centerY = videoHeight / 2;
+                    const startX = centerX - scanAreaSize / 2;
+                    const startY = centerY - scanAreaSize / 2;
 
-                    // Convertir canvas a imagen
+                    // Crear canvas solo con el área central
+                    const canvas = document.createElement('canvas');
+                    canvas.width = scanAreaSize;
+                    canvas.height = scanAreaSize;
+                    const ctx = canvas.getContext('2d');
+                    
+                    // Dibujar área central
+                    ctx.drawImage(
+                        video, 
+                        startX, startY, scanAreaSize, scanAreaSize,
+                        0, 0, scanAreaSize, scanAreaSize
+                    );
+
+                    // Mejorar imagen para mejor detección
+                    enhanceImage(canvas, ctx);
+
+                    // Convertir a imagen
                     const img = new Image();
                     img.src = canvas.toDataURL('image/png');
                     
-                    // Esperar a que la imagen se cargue (con timeout más corto para velocidad)
                     await new Promise((resolve, reject) => {
                         img.onload = resolve;
                         img.onerror = reject;
-                        setTimeout(() => reject(new Error('Image load timeout')), 500);
+                        setTimeout(() => reject(new Error('Image load timeout')), 300);
                     });
 
-                    // Intentar decodificar el código
+                    // Intentar decodificar
                     const result = await codeReader.decodeFromImageElement(img);
                     
                     if (result) {
                         const code = result.getText();
-                        setIsDetecting(true);
-                        setDetectedCode(code);
-                    } else {
-                        setIsDetecting(false);
-                        setDetectedCode('');
-                    }
-                } catch (error) {
-                    // NotFoundException es normal cuando no hay código visible
-                    setIsDetecting(false);
-                    setDetectedCode('');
-                }
-            };
-
-            // Captura del código (solo cuando presiona)
-            const captureCode = () => {
-                if (detectedCode && isDetecting) {
-                    setScannedCode(detectedCode);
-                    playBeep();
-                    vibrate();
-                    hasScannedRef.current = true;
-                    setIsDetecting(false);
-                    setDetectedCode('');
-                    // Llamar al callback para buscar en la base de datos
-                    if (onCodeScanned) {
-                        onCodeScanned(detectedCode);
-                    }
-                }
-            };
-
-            // Escaneo forzado cuando presiona sin detección previa (sin límite de intentos)
-            const forceScan = async () => {
-                if (!isCameraActive || !videoRef.current || !codeReaderRef.current) return;
-
-                try {
-                    const codeReader = codeReaderRef.current;
-                    const video = videoRef.current;
-                    
-                    if (!video.videoWidth || !video.videoHeight) {
-                        return;
-                    }
-
-                    // Intentar escanear indefinidamente hasta encontrar código o soltar el botón
-                    const tryScan = async () => {
-                        // Si ya escaneó o no está presionado, detener
-                        if (hasScannedRef.current || !isPressed) {
-                            setIsScanning(false);
+                        
+                        // Evitar escanear el mismo código repetidamente
+                        if (code === lastScannedCode && isAuto) {
+                            isScanningActiveRef.current = false;
                             return;
                         }
+
+                        setScannedCode(code);
+                        setLastScannedCode(code);
+                        playBeep();
+                        vibrate();
+                        hasScannedRef.current = true;
+                        setIsScanning(false);
+                        setIsDetecting(true);
                         
-                        try {
-                            const canvas = document.createElement('canvas');
-                            canvas.width = video.videoWidth;
-                            canvas.height = video.videoHeight;
-                            const ctx = canvas.getContext('2d');
-                            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-                            const img = new Image();
-                            img.src = canvas.toDataURL('image/png');
-                            
-                            await new Promise((resolve, reject) => {
-                                img.onload = resolve;
-                                img.onerror = reject;
-                                setTimeout(() => reject(new Error('Image load timeout')), 300);
-                            });
-
-                            const result = await codeReader.decodeFromImageElement(img);
-                            
-                            if (result) {
-                                const code = result.getText();
-                                setScannedCode(code);
-                                playBeep();
-                                vibrate();
-                                hasScannedRef.current = true;
-                                setIsScanning(false);
-                                // Llamar al callback para buscar en la base de datos
-                                if (onCodeScanned) {
-                                    onCodeScanned(code);
-                                }
-                                return;
-                            }
-                        } catch (error) {
-                            // Continuar intentando si no encuentra código
+                        // Buscar en base de datos
+                        if (onCodeScanned) {
+                            onCodeScanned(code);
                         }
-
-                        // Si no encontró código y aún está presionado, intentar de nuevo
-                        if (!hasScannedRef.current && isPressed) {
-                            setTimeout(tryScan, 200);
-                        } else {
-                            setIsScanning(false);
+                        
+                        // En modo automático, resetear después de 2 segundos
+                        if (isAuto) {
+                            setTimeout(() => {
+                                hasScannedRef.current = false;
+                                setIsDetecting(false);
+                            }, 2000);
                         }
-                    };
-
-                    await tryScan();
+                    } else {
+                        setIsDetecting(false);
+                    }
                 } catch (error) {
-                    setIsScanning(false);
+                    setIsDetecting(false);
+                } finally {
+                    isScanningActiveRef.current = false;
                 }
             };
 
@@ -1825,66 +1806,98 @@
                     return;
                 }
                 
-                setIsPressed(true);
-                hasScannedRef.current = false;
-                setTimeLeft(30); // Reiniciar temporizador
-                
-                // Si hay detección previa, capturar inmediatamente
-                if (isDetecting && detectedCode) {
-                    captureCode();
-                } else {
-                    // Si no hay detección, intentar escanear múltiples veces
+                if (!isAutoMode) {
+                    setIsPressed(true);
+                    hasScannedRef.current = false;
                     setIsScanning(true);
-                    forceScan();
+                    scanCenterArea(false);
                 }
             };
 
             const handlePressEnd = () => {
-                setIsPressed(false);
-                setIsScanning(false);
-                hasScannedRef.current = false;
-                if (scanIntervalRef.current) {
-                    clearInterval(scanIntervalRef.current);
-                    scanIntervalRef.current = null;
+                if (!isAutoMode) {
+                    setIsPressed(false);
+                    setIsScanning(false);
+                    hasScannedRef.current = false;
                 }
             };
 
-            const copyToClipboard = () => {
-                if (scannedCode) {
-                    navigator.clipboard.writeText(scannedCode).then(() => {
-                        alert('Código copiado al portapapeles');
-                    }).catch(err => {
-                        console.error('Error copying:', err);
-                    });
+            const handleManualSearch = (e) => {
+                if (e.key === 'Enter' && manualCode.trim()) {
+                    const code = manualCode.trim();
+                    setScannedCode(code);
+                    if (onCodeScanned) {
+                        onCodeScanned(code);
+                    }
+                    setManualCode('');
                 }
+            };
+
+            const toggleAutoMode = () => {
+                setIsAutoMode(!isAutoMode);
+                hasScannedRef.current = false;
+                setIsDetecting(false);
             };
 
             return (
                 <div className="h-full flex flex-col bg-black relative">
-                    {/* Resultado escaneado en la parte superior */}
-                    {scannedCode && (
-                        <div className="absolute top-0 left-0 right-0 z-30 bg-white p-6 m-4 rounded-lg shadow-xl border-2 border-red-600">
-                            <div className="flex items-center justify-between gap-4">
-                                <div className="flex-1 min-w-0">
-                                    <p className="text-xs text-slate-500 mb-2 font-semibold">Código escaneado:</p>
-                                    <p className="text-base font-mono font-bold text-slate-900 break-all leading-relaxed">{scannedCode}</p>
-                                </div>
+                    {/* Controles superiores */}
+                    {isCameraActive && (
+                        <div className="absolute top-4 left-4 right-4 z-30 flex gap-2 flex-wrap">
+                            {/* Toggle Modo Automático/Manual */}
+                            <button
+                                onClick={toggleAutoMode}
+                                className={`px-4 py-2 rounded-lg font-bold text-sm shadow-lg transition-all ${
+                                    isAutoMode 
+                                        ? 'bg-green-600 text-white' 
+                                        : 'bg-white/20 text-white backdrop-blur-sm'
+                                }`}
+                            >
+                                {isAutoMode ? '✓ Auto' : 'Manual'}
+                            </button>
+                            
+                            {/* Botón Linterna */}
+                            {torchSupported && (
                                 <button
-                                    onClick={copyToClipboard}
-                                    className="bg-red-600 text-white px-6 py-3 rounded-lg font-bold text-sm hover:bg-red-700 active:scale-95 transition-transform shrink-0 shadow-md"
+                                    onClick={toggleTorch}
+                                    className={`px-4 py-2 rounded-lg font-bold text-sm shadow-lg transition-all ${
+                                        isTorchOn 
+                                            ? 'bg-yellow-500 text-black' 
+                                            : 'bg-white/20 text-white backdrop-blur-sm'
+                                    }`}
                                 >
-                                    Copiar
+                                    {isTorchOn ? '💡 ON' : '💡 OFF'}
                                 </button>
-                            </div>
+                            )}
                         </div>
                     )}
 
-                    {/* Temporizador */}
-                    {isCameraActive && (
-                        <div className="absolute top-4 right-4 z-30 bg-black/70 text-white px-4 py-2 rounded-lg font-bold text-lg">
-                            {timeLeft}s
+                    {/* Campo de búsqueda manual */}
+                    <div className="absolute bottom-4 left-4 right-4 z-30">
+                        <div className="bg-white/95 backdrop-blur-sm rounded-lg p-3 shadow-xl">
+                            <div className="flex gap-2">
+                                <input
+                                    ref={manualInputRef}
+                                    type="text"
+                                    value={manualCode}
+                                    onChange={(e) => setManualCode(e.target.value)}
+                                    onKeyPress={handleManualSearch}
+                                    placeholder="Ingresa código y presiona Enter"
+                                    className="flex-1 px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-red-500 outline-none text-slate-900 font-mono"
+                                />
+                                <button
+                                    onClick={() => {
+                                        if (manualCode.trim()) {
+                                            handleManualSearch({ key: 'Enter' });
+                                        }
+                                    }}
+                                    className="bg-red-600 text-white px-6 py-2 rounded-lg font-bold hover:bg-red-700 active:scale-95 transition-transform"
+                                >
+                                    Buscar
+                                </button>
+                            </div>
                         </div>
-                    )}
+                    </div>
 
                     {/* Video de la cámara */}
                     <div className="flex-1 relative overflow-hidden">
@@ -1896,54 +1909,75 @@
                             muted
                         />
                         
-                        {/* Área transparente para presionar (botón de escaneo) */}
-                        <div
-                            className="absolute inset-0 z-20 touch-none"
-                            onTouchStart={handlePressStart}
-                            onTouchEnd={handlePressEnd}
-                            onMouseDown={handlePressStart}
-                            onMouseUp={handlePressEnd}
-                            onMouseLeave={handlePressEnd}
-                            style={{ 
-                                backgroundColor: isPressed ? 'rgba(239, 68, 68, 0.1)' : 'transparent',
-                                cursor: 'pointer'
-                            }}
-                        >
-                            {/* Indicador visual cuando está presionado */}
-                            {isPressed && (
-                                <div className="absolute inset-0 flex items-center justify-center">
-                                    <div className="bg-red-600/20 border-4 border-red-600 rounded-full w-32 h-32 flex items-center justify-center animate-pulse">
-                                        <Icons.Scanner className="text-white" width="48" height="48" />
+                        {/* Área para modo manual */}
+                        {!isAutoMode && (
+                            <div
+                                className="absolute inset-0 z-20 touch-none"
+                                onTouchStart={handlePressStart}
+                                onTouchEnd={handlePressEnd}
+                                onMouseDown={handlePressStart}
+                                onMouseUp={handlePressEnd}
+                                onMouseLeave={handlePressEnd}
+                                style={{ 
+                                    backgroundColor: isPressed ? 'rgba(239, 68, 68, 0.1)' : 'transparent',
+                                    cursor: 'pointer'
+                                }}
+                            >
+                                {isPressed && (
+                                    <div className="absolute inset-0 flex items-center justify-center">
+                                        <div className="bg-red-600/20 border-4 border-red-600 rounded-full w-32 h-32 flex items-center justify-center animate-pulse">
+                                            <Icons.Scanner className="text-white" width="48" height="48" />
+                                        </div>
                                     </div>
-                                </div>
-                            )}
-                        </div>
+                                )}
+                            </div>
+                        )}
 
-                        {/* Overlay de guía y recuadro verde cuando detecta */}
+                        {/* Overlay de guía - ventana de lectura central */}
                         <div className="absolute inset-0 z-10 pointer-events-none">
                             <div className="absolute inset-0 flex items-center justify-center">
                                 {isDetecting ? (
-                                    <div className="border-4 border-green-500 rounded-lg w-64 h-64 shadow-lg bg-green-500/20 animate-pulse">
+                                    <div className="border-4 border-green-500 rounded-lg w-64 h-64 shadow-2xl bg-green-500/30 animate-pulse">
                                         <div className="absolute inset-0 flex items-center justify-center">
-                                            <div className="bg-green-500 text-white px-4 py-2 rounded-lg font-bold text-sm">
-                                                ✓ Detectando
+                                            <div className="bg-green-500 text-white px-4 py-2 rounded-lg font-bold text-sm shadow-lg">
+                                                ✓ {scannedCode ? 'Escaneado!' : 'Detectando...'}
                                             </div>
                                         </div>
                                     </div>
                                 ) : (
-                                    <div className="border-2 border-white/50 rounded-lg w-64 h-64 shadow-lg"></div>
+                                    <div className={`border-2 ${isAutoMode ? 'border-yellow-400' : 'border-white/50'} rounded-lg w-64 h-64 shadow-lg`}>
+                                        {isAutoMode && (
+                                            <div className="absolute -top-8 left-1/2 transform -translate-x-1/2 bg-yellow-400 text-black px-3 py-1 rounded-full text-xs font-bold">
+                                                Modo Automático
+                                            </div>
+                                        )}
+                                    </div>
                                 )}
                             </div>
+                            
+                            {/* Instrucciones */}
+                            {!isAutoMode && (
+                                <div className="absolute bottom-24 left-0 right-0 flex justify-center">
+                                    <div className="bg-black/70 text-white px-4 py-2 rounded-lg text-sm font-bold">
+                                        Presiona para escanear
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     </div>
 
-                    {/* Instrucciones - NO bloquea los toques */}
+                    {/* Pantalla de inicio */}
                     {!isCameraActive && (
-                        <div className="absolute inset-0 z-10 bg-black/80 flex items-center justify-center pointer-events-none">
+                        <div className="absolute inset-0 z-10 bg-black/90 flex items-center justify-center pointer-events-none">
                             <div className="text-center text-white p-6">
                                 <Icons.Scanner className="mx-auto mb-4" width="64" height="64" />
-                                <p className="text-lg font-bold mb-2">Presiona para activar la cámara</p>
-                                <p className="text-sm text-slate-300">Mantén presionado para escanear</p>
+                                <p className="text-lg font-bold mb-2">Escáner QR / Código de Barras</p>
+                                <p className="text-sm text-slate-300 mb-4">Presiona para activar la cámara</p>
+                                <div className="mt-4 space-y-2 text-xs text-slate-400">
+                                    <p>• Modo automático: escanea continuamente</p>
+                                    <p>• Modo manual: presiona para escanear</p>
+                                    <p>• Ingresa código manualmente abajo</p>
+                                </div>
                             </div>
                         </div>
                     )}
@@ -3208,10 +3242,12 @@
                 if (!APPS_SCRIPT_URL) return;
                 if (!silent) setLoading(true);
                 try {
-                    // console.log("Intentando conectar..."); // Debug connection
+                    // Enviar timestamp de última sincronización para optimizar
+                    const url = lastSyncTimestamp > 0 
+                        ? `${APPS_SCRIPT_URL}?lastSync=${lastSyncTimestamp}`
+                        : APPS_SCRIPT_URL;
                     
-                    // CAMBIO IMPORTANTE: Added credentials: 'omit' para evitar conflictos CORS con cookies de Google
-                    const response = await fetch(APPS_SCRIPT_URL, {
+                    const response = await fetch(url, {
                         method: 'GET',
                         credentials: 'omit',
                         headers: {
@@ -3233,23 +3269,41 @@
                     }
 
                     if (data.status === 'success') {
-                        setProducts((data.products || []).filter(p => p && String(p).trim() !== ""));
-                        setLocations((data.locations || []).filter(l => l && String(l).trim() !== ""));
-                        const newLog = (data.auditLog || []).reverse();
-                        setAuditLog(newLog);
-                        setPendingVerification(prev => prev.filter(loc => !newLog.some(entry => entry.location === loc)));
-                        setDeletingLocations(prev => prev.filter(loc => newLog.some(entry => entry.location === loc)));
+                        // Solo actualizar si hay cambios nuevos (comparar timestamps)
+                        const serverTimestamp = data.timestamp || Date.now();
+                        const hasChanges = serverTimestamp > lastSyncTimestamp;
+                        
+                        if (hasChanges || lastSyncTimestamp === 0) {
+                            setProducts((data.products || []).filter(p => p && String(p).trim() !== ""));
+                            setLocations((data.locations || []).filter(l => l && String(l).trim() !== ""));
+                            const newLog = (data.auditLog || []).reverse();
+                            setAuditLog(newLog);
+                            setPendingVerification(prev => prev.filter(loc => !newLog.some(entry => entry.location === loc)));
+                            setDeletingLocations(prev => prev.filter(loc => newLog.some(entry => entry.location === loc)));
+                            setLastSyncTimestamp(serverTimestamp);
+                            setConsecutiveNoChanges(0); // Resetear contador de sin cambios
+                            
+                            // Ajustar polling: si hay cambios, volver a intervalo corto
+                            setPollingInterval(2000);
+                        } else {
+                            // No hay cambios: aumentar intervalo gradualmente
+                            setConsecutiveNoChanges(prev => prev + 1);
+                            if (consecutiveNoChanges > 5) {
+                                setPollingInterval(prev => Math.min(prev * 1.2, 10000)); // Máximo 10 segundos
+                            }
+                        }
+                        
                         setLastUpdate(new Date());
                         setIsOnline(true);
-                        setError(''); // Clear error on success
+                        setError('');
                     } else {
                         setIsOnline(false);
                         setError('Error en status del servidor');
                     }
                 } catch (err) { 
-                    // console.error("Error de conexión:", err); // Log visible
                     setIsOnline(false);
-                    setError(err.message); // Store error for UI
+                    setError(err.message);
+                    setConsecutiveNoChanges(prev => prev + 1);
                 } finally { 
                     if (!silent) setLoading(false); 
                 }
@@ -3272,40 +3326,84 @@
                 return products;
             }, [products]);
 
-            // PROCESADOR DE COLA DE GUARDADO OPTIMIZADO
-            // Procesa múltiples items en paralelo (hasta 3 simultáneos) para mayor velocidad
+            // Estados para mejoras multi-usuario
+            const [consecutiveErrors, setConsecutiveErrors] = React.useState(0);
+            const [maxParallel, setMaxParallel] = React.useState(3);
+
+            // Función de guardado con reintentos (exponential backoff)
+            const processItemWithRetry = async (itemToSave, maxRetries = 3) => {
+                let retryCount = 0;
+                let delay = 500; // Empezar con 500ms
+                
+                while (retryCount < maxRetries) {
+                    try {
+                        const response = await fetch(APPS_SCRIPT_URL, { 
+                            method: 'POST', 
+                            body: JSON.stringify(itemToSave),
+                            credentials: 'omit'
+                        });
+                        
+                        if (response.ok) {
+                            const data = await response.json().catch(() => ({}));
+                            setConsecutiveErrors(0); // Resetear errores consecutivos
+                            addLog(`✅ ${itemToSave.location} guardado.`);
+                            return { success: true, item: itemToSave };
+                        } else {
+                            throw new Error(`HTTP ${response.status}`);
+                        }
+                    } catch (err) {
+                        retryCount++;
+                        
+                        if (retryCount >= maxRetries) {
+                            // Guardar en localStorage como "pendiente" para reintentar después
+                            try {
+                                const pendingItems = JSON.parse(localStorage.getItem('pending_saves') || '[]');
+                                pendingItems.push({
+                                    ...itemToSave,
+                                    attempts: retryCount,
+                                    lastAttempt: Date.now()
+                                });
+                                localStorage.setItem('pending_saves', JSON.stringify(pendingItems));
+                                addLog(`⚠️ ${itemToSave.location} guardado localmente (se reintentará)`);
+                            } catch (e) {
+                                addLog(`❌ Error guardando localmente: ${itemToSave.location}`);
+                            }
+                            
+                            setConsecutiveErrors(prev => prev + 1);
+                            return { success: false, item: itemToSave, error: err.message };
+                        }
+                        
+                        // Esperar antes de reintentar (exponential backoff)
+                        delay = delay * 2; // 500ms, 1000ms, 2000ms
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                    }
+                }
+            };
+
+            // PROCESADOR DE COLA DE GUARDADO OPTIMIZADO CON REINTENTOS
+            // Procesa múltiples items en paralelo (hasta maxParallel simultáneos)
             React.useEffect(() => {
                 const processQueue = async () => {
                     if (saveQueue.length === 0) return;
 
-                    // Procesar hasta 3 items en paralelo para mayor velocidad
-                    const itemsToProcess = saveQueue.slice(0, 3);
+                    // Ajustar paralelismo según errores consecutivos
+                    const currentMaxParallel = consecutiveErrors > 3 ? 1 : maxParallel;
+                    const itemsToProcess = saveQueue.slice(0, currentMaxParallel);
                     
                     try {
-                        // Procesar todos los items en paralelo
-                        const promises = itemsToProcess.map(async (itemToSave) => {
-                            try {
-                                const response = await fetch(APPS_SCRIPT_URL, { 
-                                    method: 'POST', 
-                                    body: JSON.stringify(itemToSave),
-                                    credentials: 'omit'
-                                });
-                                
-                                // Verificar respuesta si es posible
-                                if (response.ok) {
-                                    addLog(`✅ ${itemToSave.location} guardado.`);
-                                    return { success: true, item: itemToSave };
-                                } else {
-                                    throw new Error(`HTTP ${response.status}`);
-                                }
-                            } catch (err) {
-                                addLog(`❌ Error guardando: ${itemToSave.location}`);
-                                return { success: false, item: itemToSave };
-                            }
-                        });
+                        // Procesar todos los items en paralelo con reintentos
+                        const promises = itemsToProcess.map(itemToSave => processItemWithRetry(itemToSave));
 
                         // Esperar a que todos terminen
                         const results = await Promise.allSettled(promises);
+                        
+                        // Contar éxitos y fallos
+                        const successCount = results.filter(r => r.status === 'fulfilled' && r.value.success).length;
+                        const failCount = results.length - successCount;
+                        
+                        if (failCount > 0) {
+                            setConsecutiveErrors(prev => prev + failCount);
+                        }
                         
                         // Quitar los items procesados de la cola (todos, exitosos o no, para no atascar)
                         setSaveQueue(prev => prev.slice(itemsToProcess.length));
@@ -3318,6 +3416,7 @@
                         
                     } catch (err) {
                         addLog(`Error en procesamiento de cola`);
+                        setConsecutiveErrors(prev => prev + 1);
                         // En caso de error general, quitar solo el primer item
                         setSaveQueue(prev => prev.slice(1));
                     }
@@ -3327,7 +3426,40 @@
                 if (saveQueue.length > 0) {
                     processQueue();
                 }
-            }, [saveQueue]);
+            }, [saveQueue, consecutiveErrors, maxParallel]);
+
+            // Procesar items pendientes de localStorage al reconectar
+            React.useEffect(() => {
+                const processPendingItems = async () => {
+                    try {
+                        const pendingItems = JSON.parse(localStorage.getItem('pending_saves') || '[]');
+                        
+                        if (pendingItems.length > 0) {
+                            // Intentar enviar items pendientes (máximo 5 a la vez)
+                            const itemsToRetry = pendingItems.slice(0, 5);
+                            
+                            for (const item of itemsToRetry) {
+                                const result = await processItemWithRetry(item, 2); // Solo 2 reintentos para pendientes
+                                
+                                if (result.success) {
+                                    // Remover del localStorage
+                                    const updated = pendingItems.filter(p => p.id !== item.id && p.timestamp !== item.timestamp);
+                                    localStorage.setItem('pending_saves', JSON.stringify(updated));
+                                    addLog(`✅ Item pendiente guardado: ${item.location}`);
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        // Silenciar errores de procesamiento de pendientes
+                    }
+                };
+                
+                // Procesar pendientes cada 30 segundos
+                const interval = setInterval(processPendingItems, 30000);
+                processPendingItems(); // Ejecutar inmediatamente al cargar
+                
+                return () => clearInterval(interval);
+            }, []);
 
             // Efecto para Ctrl+D (RESTAURADO Y PROTEGIDO PARA ADMIN)
             React.useEffect(() => {
@@ -3344,19 +3476,36 @@
                 return () => window.removeEventListener('keydown', handleKeyDown);
             }, [currentUser]); // Dependencia necesaria para leer el usuario actualizado
 
-            // Polling optimizado: cada 2 segundos (más rápido) y solo si no hay items en cola
-            // Si hay items en cola, el procesador de cola ya actualiza automáticamente
+            // Polling adaptativo: ajusta intervalo según actividad y cambios
+            const [pollingInterval, setPollingInterval] = React.useState(2000);
+            const [consecutiveNoChanges, setConsecutiveNoChanges] = React.useState(0);
+            const [lastSyncTimestamp, setLastSyncTimestamp] = React.useState(0);
+            const [isUserActive, setIsUserActive] = React.useState(true);
+
+            // Detectar si el usuario está activo (no en background)
+            React.useEffect(() => {
+                const handleVisibilityChange = () => {
+                    setIsUserActive(!document.hidden);
+                };
+                document.addEventListener('visibilitychange', handleVisibilityChange);
+                return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+            }, []);
+
+            // Polling adaptativo optimizado
             React.useEffect(() => { 
                 fetchSheetData(); 
+                
                 const interval = setInterval(() => {
-                    // Solo hacer polling si no hay items pendientes en la cola
-                    // Esto evita peticiones innecesarias cuando ya estamos actualizando
-                    if (saveQueue.length === 0) {
+                    // Solo hacer polling si:
+                    // 1. No hay items en cola
+                    // 2. El usuario está activo (no en background)
+                    if (saveQueue.length === 0 && isUserActive) {
                         fetchSheetData(true);
                     }
-                }, 2000); // Reducido a 2 segundos para mayor responsividad
+                }, pollingInterval);
+                
                 return () => clearInterval(interval);
-            }, [saveQueue.length]);
+            }, [saveQueue.length, pollingInterval, isUserActive]);
             
             // Effect to focus on Product input when modal opens
             React.useEffect(() => {
@@ -3678,24 +3827,31 @@
             const handleSaveAudit = () => {
                 if (!selectedLocation || !selectedProduct || !quantity) return alert("Faltan datos");
                 
-                // Reconstruir producto completo si el usuario escribió solo el nombre y existe en el mapa
-                // Si selectedProduct ya es el string completo (porque seleccionó de la lista), esto devuelve lo mismo
-                // Si selectedProduct es un nombre limpio que coincide con un mapa, obtenemos el full string.
-                // Si es un producto nuevo que no está en la lista, se guarda tal cual.
+                // DETECCIÓN DE CONFLICTOS: Verificar si alguien más editó esta ubicación recientemente
+                const existingEntry = auditLog.find(entry => entry.location === selectedLocation);
                 
-                // Primero intentamos ver si lo que está escrito es un nombre limpio que machea
+                if (existingEntry) {
+                    const entryTimestamp = existingEntry.timestamp || existingEntry.id || 0;
+                    const timeSinceLastEdit = Date.now() - entryTimestamp;
+                    
+                    // Si fue editado hace menos de 5 segundos por otro usuario, mostrar advertencia
+                    if (timeSinceLastEdit < 5000 && existingEntry.user && existingEntry.user !== currentUser) {
+                        const secondsAgo = Math.round(timeSinceLastEdit / 1000);
+                        const confirmMessage = `⚠️ Esta ubicación fue editada hace ${secondsAgo} segundo${secondsAgo !== 1 ? 's' : ''} por ${existingEntry.user}.\n\n¿Deseas sobrescribir su cambio?`;
+                        
+                        if (!window.confirm(confirmMessage)) {
+                            addLog(`Guardado cancelado: ${selectedLocation} (conflicto detectado)`);
+                            return; // Cancelar guardado
+                        }
+                    }
+                }
+                
+                // Reconstruir producto completo si el usuario escribió solo el nombre y existe en el mapa
                 let productToSave = selectedProduct;
                 
-                // Buscar si existe un match por nombre limpio en nuestro mapa
-                // nameToFullProductMap tiene keys = Clean Name, value = Full String
-                // Pero si el usuario seleccionó de la lista, selectedProduct YA ES Full String.
-                
-                // Chequeamos: es selectedProduct un clean name válido?
                 if (nameToFullProductMap.has(selectedProduct)) {
                      productToSave = nameToFullProductMap.get(selectedProduct);
-                } 
-                // Si no, tal vez ya es un full string?
-                // No hacemos nada, se guarda tal cual.
+                }
 
                 // OPTIMISTIC UPDATE: Actualizar UI Inmediatamente
                 const timestamp = Date.now();
