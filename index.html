@@ -74,7 +74,7 @@
         };
 
         // --- URL DEL SCRIPT DE GOOGLE ---
-        const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwRsXtwqtDwslArxI5BXEKXnmh2z0yw1AF4KmBoYxKYcJ83m7sa6yudKH09WWLzUgBx/exec"; 
+        const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbw7eeYtIDhT5uq-ByZhlNCLbwLUtNxQczBMakoS8e3MH1ZZRAeGKOttu1ETJulFaeC-/exec"; 
 
         // --- ZONAS INICIALES ---
         const INITIAL_ZONES = [
@@ -1599,13 +1599,13 @@
                         // Escanear inmediatamente la primera vez
                         scanCenterArea(true);
                         
-                        // Luego escanear cada 300ms
+                        // Luego escanear cada 2 segundos (2000ms)
                         autoScanIntervalRef.current = setInterval(() => {
                             // Verificar que aún estamos en modo automático y la cámara está activa
                             if (isCameraActive && isAutoMode && !isPressed) {
                                 scanCenterArea(true);
                             }
-                        }, 300);
+                        }, 2000);
                     };
                     
                     // Iniciar escaneo automático
@@ -3680,6 +3680,11 @@
             const quantityInputRef = React.useRef(null);
             const productInputRef = React.useRef(null);
             
+            // --- CACHÉ LOCAL DE CÓDIGOS PARA BÚSQUEDA RÁPIDA ---
+            const codesCacheRef = React.useRef(new Map()); // Map<código_normalizado, {producto, ubicacion}>
+            const codesCacheTimestampRef = React.useRef(0); // Timestamp del último refresco
+            const codesCacheIntervalRef = React.useRef(null); // Interval para refrescar caché
+            
             // --- MODO DEBUG Y HERRAMIENTAS ---
             const [showTools, setShowTools] = React.useState(false);
             const [isDebugMode, setIsDebugMode] = React.useState(false);
@@ -3962,6 +3967,37 @@
                 return () => clearInterval(interval);
             }, [saveQueue.length, pollingInterval, isUserActive]);
             
+            // Cargar caché de códigos al iniciar la aplicación
+            React.useEffect(() => {
+                loadCodesCache();
+            }, []); // Solo al montar el componente
+            
+            // Actualizar caché cuando products cambie (para el fallback)
+            React.useEffect(() => {
+                // Si products tiene datos y el caché está vacío o es muy antiguo (>10 segundos), actualizar
+                if (products.length > 0) {
+                    const cacheAge = Date.now() - codesCacheTimestampRef.current;
+                    if (codesCacheRef.current.size === 0 || cacheAge > 10000) {
+                        // Solo usar fallback si el caché está vacío o es muy antiguo
+                        loadCodesCache(true); // Pasar true para permitir fallback con products
+                    }
+                }
+            }, [products.length]); // Solo cuando cambia la cantidad de productos
+            
+            // Refrescar caché cada 5 segundos en segundo plano
+            React.useEffect(() => {
+                codesCacheIntervalRef.current = setInterval(() => {
+                    loadCodesCache();
+                }, 5000);
+                
+                return () => {
+                    if (codesCacheIntervalRef.current) {
+                        clearInterval(codesCacheIntervalRef.current);
+                        codesCacheIntervalRef.current = null;
+                    }
+                };
+            }, []); // Solo al montar el componente
+            
             // Effect to focus on Product input when modal opens
             React.useEffect(() => {
                 if (isModalOpen && productInputRef.current) {
@@ -4165,7 +4201,93 @@
             };
 
 
-            // Función para buscar código en la base de datos
+            // Función para normalizar código (quitar espacios, minúsculas, etc.)
+            const normalizeCode = (code) => {
+                return String(code || '').trim().replace(/\s+/g, '').toLowerCase();
+            };
+
+            // Función para extraer código de un producto (si tiene formato CODIGO-NOMBRE)
+            const extractCodeFromProduct = (productString) => {
+                if (!productString) return null;
+                const parts = String(productString).split('-');
+                if (parts.length > 1) {
+                    return parts[0].trim();
+                }
+                return null;
+            };
+
+            // Función para cargar todos los códigos en el caché local desde el servidor
+            const loadCodesCache = async (useProductsFallback = true) => {
+                try {
+                    // Intentar obtener todos los códigos desde el servidor
+                    const payload = {
+                        action: 'getAllCodes'
+                    };
+                    
+                    const response = await fetch(APPS_SCRIPT_URL, {
+                        method: 'POST',
+                        credentials: 'omit',
+                        body: JSON.stringify(payload)
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (data.status === 'success' && data.codes && Array.isArray(data.codes)) {
+                        // Limpiar caché anterior
+                        codesCacheRef.current.clear();
+                        
+                        // Cargar todos los códigos en el caché
+                        data.codes.forEach(item => {
+                            if (item.codigo) {
+                                const normalizedCode = normalizeCode(item.codigo);
+                                codesCacheRef.current.set(normalizedCode, {
+                                    producto: item.producto || '',
+                                    ubicacion: item.ubicacion || ''
+                                });
+                            }
+                        });
+                        
+                        codesCacheTimestampRef.current = Date.now();
+                        console.log(`✅ Caché de códigos actualizado desde servidor: ${codesCacheRef.current.size} códigos cargados`);
+                        return; // Salir si se cargó exitosamente desde el servidor
+                    }
+                } catch (error) {
+                    console.error('❌ Error cargando caché de códigos desde servidor:', error);
+                }
+                
+                // Fallback: Si la acción getAllCodes no existe o falló, extraer códigos de productos existentes
+                // (esto es un fallback temporal, idealmente deberías tener la acción getAllCodes en el backend)
+                if (useProductsFallback) {
+                    try {
+                        codesCacheRef.current.clear();
+                        // Extraer códigos de productos que ya están cargados
+                        // Nota: Esto solo funciona si los productos tienen formato CODIGO-NOMBRE
+                        products.forEach(product => {
+                            const code = extractCodeFromProduct(product);
+                            if (code) {
+                                const normalizedCode = normalizeCode(code);
+                                codesCacheRef.current.set(normalizedCode, {
+                                    producto: product || '',
+                                    ubicacion: '' // La ubicación no está disponible en productos, solo en búsquedas específicas
+                                });
+                            }
+                        });
+                        
+                        codesCacheTimestampRef.current = Date.now();
+                        console.log(`✅ Caché de códigos actualizado desde productos (fallback): ${codesCacheRef.current.size} códigos cargados`);
+                    } catch (fallbackError) {
+                        console.error('❌ Error en fallback de caché:', fallbackError);
+                    }
+                }
+            };
+
+            // Función para buscar código en el caché local (instantáneo)
+            const searchCodeInCache = (code) => {
+                const normalizedCode = normalizeCode(code);
+                return codesCacheRef.current.get(normalizedCode) || null;
+            };
+
+            // Función para buscar código en la base de datos (con caché local)
             const searchCodeInDatabase = async (code) => {
                 setIsSearchingCode(true);
                 try {
@@ -4173,7 +4295,42 @@
                     const cleanCode = String(code || '').trim();
                     console.log('🔍 Buscando código:', cleanCode);
                     
-                    // Usar el mismo método que funciona para otras acciones (sin headers para evitar CORS)
+                    // PRIMERO: Buscar en el caché local (instantáneo, sin await)
+                    const cachedResult = searchCodeInCache(cleanCode);
+                    if (cachedResult) {
+                        console.log('✅ Código encontrado en caché local (instantáneo)');
+                        setIsSearchingCode(false); // Desactivar loading inmediatamente
+                        
+                        // Abrir modal con los datos encontrados desde el caché (sin delay)
+                        setScannedProduct(cachedResult.producto || '');
+                        setScannedLocation(cachedResult.ubicacion || ''); // Puede estar vacío si no tiene ubicación
+                        setScannedQuantity('');
+                        setIsScannerModalOpen(true);
+                        
+                        // Feedback visual (beep y vibración) para indicar que se encontró
+                        try {
+                            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                            const oscillator = audioContext.createOscillator();
+                            const gainNode = audioContext.createGain();
+                            oscillator.connect(gainNode);
+                            gainNode.connect(audioContext.destination);
+                            oscillator.frequency.value = 1000;
+                            oscillator.type = 'sine';
+                            gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+                            gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.2);
+                            oscillator.start(audioContext.currentTime);
+                            oscillator.stop(audioContext.currentTime + 0.2);
+                        } catch (e) {}
+                        
+                        if (navigator.vibrate) {
+                            navigator.vibrate([100]);
+                        }
+                        
+                        return; // Salir aquí, ya encontramos el código en el caché (instantáneo)
+                    }
+                    
+                    // Si no está en el caché, buscar en el servidor (fallback)
+                    console.log('⚠️ Código no encontrado en caché, buscando en servidor...');
                     const payload = {
                         action: 'searchCode',
                         code: cleanCode
@@ -4189,8 +4346,15 @@
                     console.log('📥 Respuesta del servidor:', data);
                     
                     if (data.status === 'success') {
+                        // Agregar al caché para futuras búsquedas (instantáneas)
+                        const normalizedCode = normalizeCode(cleanCode);
+                        codesCacheRef.current.set(normalizedCode, {
+                            producto: data.producto || '',
+                            ubicacion: data.ubicacion || ''
+                        });
+                        console.log(`💾 Código agregado al caché local para búsquedas futuras`);
+                        
                         // Abrir modal con los datos encontrados
-                        // Orden: Producto (no editable), Ubicación (editable si existe), Cantidad (editable)
                         setScannedProduct(data.producto || '');
                         setScannedLocation(data.ubicacion || ''); // Puede estar vacío si no tiene ubicación
                         setScannedQuantity('');
