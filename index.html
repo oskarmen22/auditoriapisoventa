@@ -1479,7 +1479,7 @@
         };
 
         // --- COMPONENTE DE ESCÁNER ---
-        const ScannerComponent = ({ activeTab, onCodeScanned }) => {
+        const ScannerComponent = ({ activeTab, onCodeScanned, isScannerModalOpen }) => {
             const videoRef = React.useRef(null);
             const streamRef = React.useRef(null);
             const codeReaderRef = React.useRef(null);
@@ -2042,14 +2042,14 @@
                 const hiddenInput = hiddenScannerInputRef.current;
                 if (!visibleInput || !hiddenInput) return;
 
-                // Función para activar el input invisible (cuando el visible no está enfocado)
+                // Función para activar el input invisible (cuando el visible no está enfocado Y el modal NO está abierto)
                 const activateHiddenInput = () => {
-                    if (!isManualInputFocused && hiddenInput && document.activeElement !== hiddenInput) {
+                    if (!isManualInputFocused && !isScannerModalOpen && hiddenInput && document.activeElement !== hiddenInput) {
                         hiddenInput.focus();
                     }
                 };
 
-                // Función para desactivar el input invisible (cuando el visible está enfocado)
+                // Función para desactivar el input invisible (cuando el visible está enfocado O el modal está abierto)
                 const deactivateHiddenInput = () => {
                     if (hiddenInput && document.activeElement === hiddenInput) {
                         hiddenInput.blur();
@@ -2085,20 +2085,23 @@
                     }
                 };
 
-                // Activar el input invisible al inicio si el visible no está enfocado
-                if (!isManualInputFocused) {
+                // Activar el input invisible al inicio si el visible no está enfocado Y el modal NO está abierto
+                if (!isManualInputFocused && !isScannerModalOpen) {
                     activateHiddenInput();
                 }
 
-                // Verificar periódicamente que el input invisible esté activo si el visible no está enfocado
+                // Verificar periódicamente que el input invisible esté activo si el visible no está enfocado Y el modal NO está abierto
                 const focusCheckInterval = setInterval(() => {
                     if (activeTab === 'scanner') {
                         const visibleInputFocused = document.activeElement === visibleInput;
                         const hiddenInputFocused = document.activeElement === hiddenInput;
                         
-                        // Si el visible no está enfocado y el invisible tampoco, activar el invisible
-                        if (!visibleInputFocused && !hiddenInputFocused) {
+                        // Si el visible no está enfocado, el invisible tampoco, Y el modal NO está abierto, activar el invisible
+                        if (!visibleInputFocused && !hiddenInputFocused && !isScannerModalOpen) {
                             activateHiddenInput();
+                        } else if (isScannerModalOpen && hiddenInputFocused) {
+                            // Si el modal está abierto, desactivar el input invisible
+                            deactivateHiddenInput();
                         }
                     }
                 }, 500);
@@ -2113,15 +2116,15 @@
                     visibleInput.removeEventListener('blur', handleVisibleBlur);
                     document.removeEventListener('click', handleClickOutside);
                 };
-            }, [activeTab, isManualInputFocused]);
+            }, [activeTab, isManualInputFocused, isScannerModalOpen]);
 
             // Detectar pistola escáner HID en el input INVISIBLE (siempre activo para pistola escáner)
             React.useEffect(() => {
                 const hiddenInput = hiddenScannerInputRef.current;
                 if (!hiddenInput || activeTab !== 'scanner') return;
                 
-                // Solo procesar si el input visible NO está enfocado
-                if (isManualInputFocused) return;
+                // Solo procesar si el input visible NO está enfocado Y el modal NO está abierto
+                if (isManualInputFocused || isScannerModalOpen) return;
 
                 // Limpiar timeout anterior si existe
                 const clearScannerTimeout = () => {
@@ -2241,7 +2244,20 @@
                     hiddenInput.removeEventListener('keydown', handleKeyDown);
                     clearScannerTimeout();
                 };
-            }, [activeTab, isManualInputFocused, onCodeScanned]);
+            }, [activeTab, isManualInputFocused, isScannerModalOpen, onCodeScanned]);
+            
+            // Desactivar input invisible cuando se abre el modal del escáner
+            React.useEffect(() => {
+                if (isScannerModalOpen) {
+                    const hiddenInput = hiddenScannerInputRef.current;
+                    if (hiddenInput && document.activeElement === hiddenInput) {
+                        hiddenInput.blur();
+                        // Limpiar cualquier valor en el input invisible
+                        setHiddenScannerCode('');
+                        scannerBufferRef.current = '';
+                    }
+                }
+            }, [isScannerModalOpen]);
             
             // Manejar entrada manual en el input VISIBLE (teclado físico o virtual)
             // Este input solo es para entrada manual del usuario, no para pistola escáner
@@ -2258,7 +2274,7 @@
 
             return (
                 <div className="h-full flex flex-col bg-black relative">
-                    {/* Input invisible para pistola escáner HID (siempre activo cuando el visible no está enfocado) */}
+                    {/* Input invisible para pistola escáner HID (siempre activo cuando el visible no está enfocado Y el modal NO está abierto) */}
                     {activeTab === 'scanner' && (
                         <input
                             ref={hiddenScannerInputRef}
@@ -2271,10 +2287,10 @@
                                 width: '1px',
                                 height: '1px',
                                 left: '-9999px',
-                                pointerEvents: isManualInputFocused ? 'none' : 'auto',
+                                pointerEvents: (isManualInputFocused || isScannerModalOpen) ? 'none' : 'auto',
                                 zIndex: -1
                             }}
-                            tabIndex={isManualInputFocused ? -1 : 0}
+                            tabIndex={(isManualInputFocused || isScannerModalOpen) ? -1 : 0}
                             autoComplete="off"
                             spellCheck="false"
                             inputMode="none"
@@ -4809,7 +4825,7 @@
                         </div>
 
                         <div className={`h-full overflow-hidden relative ${activeTab === 'scanner' ? 'block' : 'hidden'}`}>
-                            <ScannerComponent activeTab={activeTab} onCodeScanned={handleCodeScanned} />
+                            <ScannerComponent activeTab={activeTab} onCodeScanned={handleCodeScanned} isScannerModalOpen={isScannerModalOpen} />
                         </div>
                         
                         {isDebugMode && <DebugConsole logs={logs} />}
