@@ -1484,6 +1484,7 @@
             const streamRef = React.useRef(null);
             const codeReaderRef = React.useRef(null);
             const manualInputRef = React.useRef(null);
+            const hiddenScannerInputRef = React.useRef(null); // Input invisible para pistola escáner
             const [isScanning, setIsScanning] = React.useState(false);
             const [scannedCode, setScannedCode] = React.useState('');
             const [isCameraActive, setIsCameraActive] = React.useState(false);
@@ -1494,6 +1495,8 @@
             const [isTorchOn, setIsTorchOn] = React.useState(false);
             const [torchSupported, setTorchSupported] = React.useState(false);
             const [manualCode, setManualCode] = React.useState('');
+            const [hiddenScannerCode, setHiddenScannerCode] = React.useState(''); // Código del input invisible
+            const [isManualInputFocused, setIsManualInputFocused] = React.useState(false); // Estado de foco del input visible
             const [lastScannedCode, setLastScannedCode] = React.useState('');
             const [currentDetectedCode, setCurrentDetectedCode] = React.useState(''); // Código detectado visualmente
             const timerRef = React.useRef(null);
@@ -2031,75 +2034,94 @@
                 }
             };
 
-            // Mantener el input siempre enfocado cuando está en la pestaña de escáner
+            // Gestionar foco entre input visible e invisible
             React.useEffect(() => {
                 if (activeTab !== 'scanner') return;
 
-                const input = manualInputRef.current;
-                if (!input) return;
+                const visibleInput = manualInputRef.current;
+                const hiddenInput = hiddenScannerInputRef.current;
+                if (!visibleInput || !hiddenInput) return;
 
-                // Función para enfocar el input
-                const focusInput = () => {
-                    if (input && document.activeElement !== input) {
-                        input.focus();
+                // Función para activar el input invisible (cuando el visible no está enfocado)
+                const activateHiddenInput = () => {
+                    if (!isManualInputFocused && hiddenInput && document.activeElement !== hiddenInput) {
+                        hiddenInput.focus();
                     }
                 };
 
-                // Enfocar inmediatamente y luego cada vez que se pierda el foco
-                focusInput();
-                
-                // Enfocar cuando se hace click en cualquier parte del componente (excepto en otros inputs)
-                const handleClick = (e) => {
-                    // Si no se hace click en un input o textarea, enfocar nuestro input
-                    if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA' && activeTab === 'scanner') {
-                        focusInput();
+                // Función para desactivar el input invisible (cuando el visible está enfocado)
+                const deactivateHiddenInput = () => {
+                    if (hiddenInput && document.activeElement === hiddenInput) {
+                        hiddenInput.blur();
                     }
                 };
 
-                // Enfocar cuando se presiona una tecla (captura global de teclado)
-                const handleKeyPress = (e) => {
-                    // Si no es un atajo de teclado (Ctrl, Alt, Meta) y estamos en la pestaña de escáner
-                    if (!e.ctrlKey && !e.altKey && !e.metaKey && activeTab === 'scanner') {
-                        // Si el input no está enfocado, enfocarlo
-                        if (document.activeElement !== input && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') {
-                            focusInput();
-                        }
-                    }
+                // Manejar cuando el input visible recibe foco
+                const handleVisibleFocus = () => {
+                    setIsManualInputFocused(true);
+                    deactivateHiddenInput();
                 };
 
-                // Enfocar periódicamente para asegurar que siempre esté activo
-                const focusInterval = setInterval(() => {
-                    if (activeTab === 'scanner' && document.activeElement !== input) {
-                        focusInput();
-                    }
-                }, 500); // Verificar cada 500ms
-
-                // Observar cuando se pierde el foco
-                const handleBlur = () => {
-                    // Re-enfocar después de un pequeño delay
+                // Manejar cuando el input visible pierde el foco
+                const handleVisibleBlur = () => {
+                    setIsManualInputFocused(false);
+                    // Activar el invisible después de un pequeño delay
                     setTimeout(() => {
-                        if (activeTab === 'scanner') {
-                            focusInput();
+                        // Verificar directamente el estado del elemento, no el estado de React
+                        if (activeTab === 'scanner' && document.activeElement !== visibleInput) {
+                            activateHiddenInput();
                         }
                     }, 100);
                 };
 
-                input.addEventListener('blur', handleBlur);
-                document.addEventListener('click', handleClick);
-                document.addEventListener('keydown', handleKeyPress);
+                // Manejar clicks fuera del input visible
+                const handleClickOutside = (e) => {
+                    // Si se hace click fuera del input visible, desactivarlo y activar el invisible
+                    if (activeTab === 'scanner' && e.target !== visibleInput && e.target !== hiddenInput) {
+                        if (document.activeElement === visibleInput) {
+                            visibleInput.blur();
+                        }
+                        // El blur handler se encargará de activar el invisible
+                    }
+                };
+
+                // Activar el input invisible al inicio si el visible no está enfocado
+                if (!isManualInputFocused) {
+                    activateHiddenInput();
+                }
+
+                // Verificar periódicamente que el input invisible esté activo si el visible no está enfocado
+                const focusCheckInterval = setInterval(() => {
+                    if (activeTab === 'scanner') {
+                        const visibleInputFocused = document.activeElement === visibleInput;
+                        const hiddenInputFocused = document.activeElement === hiddenInput;
+                        
+                        // Si el visible no está enfocado y el invisible tampoco, activar el invisible
+                        if (!visibleInputFocused && !hiddenInputFocused) {
+                            activateHiddenInput();
+                        }
+                    }
+                }, 500);
+
+                visibleInput.addEventListener('focus', handleVisibleFocus);
+                visibleInput.addEventListener('blur', handleVisibleBlur);
+                document.addEventListener('click', handleClickOutside);
 
                 return () => {
-                    clearInterval(focusInterval);
-                    input.removeEventListener('blur', handleBlur);
-                    document.removeEventListener('click', handleClick);
-                    document.removeEventListener('keydown', handleKeyPress);
+                    clearInterval(focusCheckInterval);
+                    visibleInput.removeEventListener('focus', handleVisibleFocus);
+                    visibleInput.removeEventListener('blur', handleVisibleBlur);
+                    document.removeEventListener('click', handleClickOutside);
                 };
-            }, [activeTab]);
+            }, [activeTab, isManualInputFocused]);
 
-            // Detectar pistola escáner HID (dispositivo que actúa como teclado)
+            // Detectar pistola escáner HID en el input INVISIBLE (siempre activo para pistola escáner)
             React.useEffect(() => {
-                const input = manualInputRef.current;
-                if (!input || activeTab !== 'scanner') return;
+                const hiddenInput = hiddenScannerInputRef.current;
+                if (!hiddenInput || activeTab !== 'scanner') return;
+                
+                // Solo procesar si el input visible NO está enfocado
+                if (isManualInputFocused) return;
 
                 // Limpiar timeout anterior si existe
                 const clearScannerTimeout = () => {
@@ -2109,12 +2131,12 @@
                     }
                 };
 
-                // Procesar código escaneado
+                // Procesar código escaneado desde el input invisible
                 const processScannedCode = (code) => {
                     if (code && code.trim()) {
                         const trimmedCode = code.trim();
                         setScannedCode(trimmedCode);
-                        setManualCode(''); // Limpiar el input
+                        setHiddenScannerCode(''); // Limpiar el input invisible
                         scannerBufferRef.current = ''; // Limpiar buffer
                         lastInputTimeRef.current = 0; // Resetear tiempo
                         playBeep();
@@ -2124,6 +2146,14 @@
                         if (onCodeScanned) {
                             onCodeScanned(trimmedCode);
                         }
+                        
+                        // Re-enfocar el input invisible después de procesar (si el visible no está enfocado)
+                        setTimeout(() => {
+                            const visibleInput = manualInputRef.current;
+                            if (hiddenInput && (!visibleInput || document.activeElement !== visibleInput)) {
+                                hiddenInput.focus();
+                            }
+                        }, 100);
                     }
                 };
 
@@ -2148,11 +2178,10 @@
                         scannerBufferRef.current = currentValue;
                         
                         // Esperar un poco para ver si viene más texto o Enter
-                        // Si es entrada muy rápida, esperar menos tiempo (probablemente viene Enter)
                         const timeoutDelay = isFastInput ? 100 : 150;
                         
                         scannerInputTimeoutRef.current = setTimeout(() => {
-                            const finalCode = input.value.trim();
+                            const finalCode = hiddenInput.value.trim();
                             if (finalCode.length >= 3) {
                                 // Probablemente es un código escaneado sin Enter
                                 processScannedCode(finalCode);
@@ -2163,20 +2192,16 @@
                         scannerBufferRef.current = '';
                         lastInputTimeRef.current = 0;
                     } else {
-                        // Entrada normal de teclado o primera entrada
+                        // Entrada normal (pistola escáner que escribe más lento)
                         scannerBufferRef.current = currentValue;
                         
-                        // Para entrada manual, solo procesar automáticamente si es muy larga (más de 10 caracteres)
-                        // Esto evita que se active mientras el usuario está escribiendo
-                        if (newLength >= 10) {
-                            scannerInputTimeoutRef.current = setTimeout(() => {
-                                const finalCode = input.value.trim();
-                                // Solo procesar si no ha cambiado (el usuario terminó de escribir)
-                                if (finalCode.length >= 10 && finalCode === scannerBufferRef.current) {
-                                    processScannedCode(finalCode);
-                                }
-                            }, 800); // Para entrada manual, esperar 800ms sin cambios
-                        }
+                        // Para pistola escáner, procesar después de un tiempo sin entrada
+                        scannerInputTimeoutRef.current = setTimeout(() => {
+                            const finalCode = hiddenInput.value.trim();
+                            if (finalCode.length >= 3) {
+                                processScannedCode(finalCode);
+                            }
+                        }, 200);
                     }
                     
                     lastInputTimeRef.current = currentTime;
@@ -2188,7 +2213,7 @@
                         e.preventDefault();
                         clearScannerTimeout();
                         
-                        const code = input.value.trim();
+                        const code = hiddenInput.value.trim();
                         if (code) {
                             // Si hay código, procesarlo inmediatamente (pistola escáner o usuario presionó Enter)
                             processScannedCode(code);
@@ -2196,27 +2221,31 @@
                     } else if (e.key === 'Backspace' || e.key === 'Delete') {
                         // Si se borra, resetear tiempo para detectar nueva entrada
                         lastInputTimeRef.current = 0;
-                        scannerBufferRef.current = input.value;
+                        scannerBufferRef.current = hiddenInput.value;
                     } else if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
                         // Carácter normal, actualizar tiempo
                         lastInputTimeRef.current = Date.now();
                     }
                 };
 
-                // Manejar cambios en el input
+                // Manejar cambios en el input invisible
                 const handleChange = (e) => {
                     handleInput(e);
                 };
 
-                input.addEventListener('input', handleChange);
-                input.addEventListener('keydown', handleKeyDown);
+                hiddenInput.addEventListener('input', handleChange);
+                hiddenInput.addEventListener('keydown', handleKeyDown);
 
                 return () => {
-                    input.removeEventListener('input', handleChange);
-                    input.removeEventListener('keydown', handleKeyDown);
+                    hiddenInput.removeEventListener('input', handleChange);
+                    hiddenInput.removeEventListener('keydown', handleKeyDown);
                     clearScannerTimeout();
                 };
-            }, [manualCode, activeTab, onCodeScanned]);
+            }, [activeTab, isManualInputFocused, onCodeScanned]);
+            
+            // Manejar entrada manual en el input VISIBLE (teclado físico o virtual)
+            // Este input solo es para entrada manual del usuario, no para pistola escáner
+            // La pistola escáner usa el input invisible
 
             const toggleAutoMode = () => {
                 setIsAutoMode(!isAutoMode);
@@ -2229,6 +2258,29 @@
 
             return (
                 <div className="h-full flex flex-col bg-black relative">
+                    {/* Input invisible para pistola escáner HID (siempre activo cuando el visible no está enfocado) */}
+                    {activeTab === 'scanner' && (
+                        <input
+                            ref={hiddenScannerInputRef}
+                            type="text"
+                            value={hiddenScannerCode}
+                            onChange={(e) => setHiddenScannerCode(e.target.value)}
+                            style={{
+                                position: 'absolute',
+                                opacity: 0,
+                                width: '1px',
+                                height: '1px',
+                                left: '-9999px',
+                                pointerEvents: isManualInputFocused ? 'none' : 'auto',
+                                zIndex: -1
+                            }}
+                            tabIndex={isManualInputFocused ? -1 : 0}
+                            autoComplete="off"
+                            spellCheck="false"
+                            inputMode="none"
+                        />
+                    )}
+                    
                     {/* Controles superiores */}
                     {isCameraActive && (
                         <div className="absolute top-4 left-4 right-4 z-30 flex gap-2 flex-wrap">
@@ -2269,6 +2321,11 @@
                                     type="text"
                                     value={manualCode}
                                     onChange={(e) => setManualCode(e.target.value)}
+                                    onFocus={() => setIsManualInputFocused(true)}
+                                    onBlur={() => {
+                                        // El blur handler en el useEffect se encargará de activar el invisible
+                                        setIsManualInputFocused(false);
+                                    }}
                                     onKeyDown={(e) => {
                                         // Permitir que Enter busque manualmente también
                                         if (e.key === 'Enter') {
@@ -2278,9 +2335,8 @@
                                             }
                                         }
                                     }}
-                                    placeholder="Escanea con pistola o ingresa código manualmente"
-                                    inputMode="none"
-                                    autoFocus={activeTab === 'scanner'}
+                                    placeholder="Toca aquí para escribir con teclado"
+                                    inputMode="text"
                                     autoComplete="off"
                                     spellCheck="false"
                                     className="flex-1 px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-red-500 outline-none text-slate-900 font-mono"
