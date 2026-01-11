@@ -1479,7 +1479,7 @@
         };
 
         // --- COMPONENTE DE ESCÁNER ---
-        const ScannerComponent = ({ activeTab, onCodeScanned }) => {
+        const ScannerComponent = ({ activeTab, onCodeScanned, isScannerModalOpen }) => {
             const videoRef = React.useRef(null);
             const streamRef = React.useRef(null);
             const codeReaderRef = React.useRef(null);
@@ -1489,6 +1489,11 @@
             const [scannedCode, setScannedCode] = React.useState('');
             const [isCameraActive, setIsCameraActive] = React.useState(false);
             const [isPressed, setIsPressed] = React.useState(false);
+            const [isTemporaryAutoMode, setIsTemporaryAutoMode] = React.useState(false); // Modo automático temporal al presionar en modo manual
+            const [cameraIdleTime, setCameraIdleTime] = React.useState(30); // Tiempo de reposo en segundos
+            const [isCameraInStandby, setIsCameraInStandby] = React.useState(false); // Cámara en reposo
+            const cameraIdleTimerRef = React.useRef(null); // Timer para reposo de cámara
+            const lastActivityTimeRef = React.useRef(Date.now()); // Última actividad
             const [isDetecting, setIsDetecting] = React.useState(false);
             const [detectedCode, setDetectedCode] = React.useState('');
             const [isAutoMode, setIsAutoMode] = React.useState(false); // Modo automático desactivado por defecto
@@ -1513,12 +1518,21 @@
             // Memoria local para códigos escaneados (evitar búsquedas repetidas en modo automático)
             const scannedCodesMemoryRef = React.useRef(new Set());
 
-            // Verificar permisos de cámara guardados al iniciar
+            // Verificar permisos de cámara guardados al iniciar (desde localStorage)
             React.useEffect(() => {
+                // Verificar si ya se otorgaron permisos anteriormente (guardado en localStorage)
+                const savedPermission = localStorage.getItem('cameraPermissionGranted');
+                if (savedPermission === 'true') {
+                    cameraPermissionGrantedRef.current = true;
+                }
+                
+                // También verificar permisos actuales del navegador
                 if (navigator.permissions) {
                     navigator.permissions.query({ name: 'camera' }).then(result => {
                         if (result.state === 'granted') {
                             cameraPermissionGrantedRef.current = true;
+                            // Guardar en localStorage para recordarlo
+                            localStorage.setItem('cameraPermissionGranted', 'true');
                         }
                     }).catch(() => {});
                 }
@@ -1542,6 +1556,12 @@
             // Iniciar cámara cuando se selecciona la pestaña Escáner
             React.useEffect(() => {
                 if (activeTab === 'scanner') {
+                    // Verificar si los permisos ya están guardados
+                    const savedPermission = localStorage.getItem('cameraPermissionGranted');
+                    if (savedPermission === 'true') {
+                        cameraPermissionGrantedRef.current = true;
+                    }
+                    
                     if (!isCameraActive && window.ZXing) {
                         if (!codeReaderRef.current) {
                             codeReaderRef.current = new window.ZXing.BrowserMultiFormatReader();
@@ -1553,6 +1573,9 @@
                             video.srcObject = streamRef.current;
                             video.play().catch(err => console.error('Error playing video:', err));
                             setIsCameraActive(true);
+                            // Guardar permisos si el stream está activo
+                            cameraPermissionGrantedRef.current = true;
+                            localStorage.setItem('cameraPermissionGranted', 'true');
                         }
                     }
                 } else {
@@ -1585,7 +1608,7 @@
                 };
             }, [isCameraActive, isAutoMode]);
 
-            // Escaneo automático cuando está activo
+            // Escaneo automático cuando está activo (modo automático normal o temporal al presionar)
             React.useEffect(() => {
                 // Limpiar intervalo anterior si existe
                 if (autoScanIntervalRef.current) {
@@ -1593,7 +1616,14 @@
                     autoScanIntervalRef.current = null;
                 }
 
-                if (isCameraActive && isAutoMode && !isPressed) {
+                // Activar escaneo automático si:
+                // 1. Modo automático normal está activo (sin necesidad de presionar), O
+                // 2. Modo automático temporal está activo (presionando en modo manual)
+                const shouldAutoScanNormal = isAutoMode && isCameraActive && !isPressed; // Modo automático normal
+                const shouldAutoScanTemporary = isTemporaryAutoMode && isCameraActive && isPressed; // Modo automático temporal
+                const shouldAutoScan = shouldAutoScanNormal || shouldAutoScanTemporary;
+                
+                if (shouldAutoScan) {
                     // Función para iniciar escaneo automático
                     const startAutoScan = () => {
                         // Escanear inmediatamente la primera vez
@@ -1601,8 +1631,12 @@
                         
                         // Luego escanear cada 2 segundos (2000ms)
                         autoScanIntervalRef.current = setInterval(() => {
-                            // Verificar que aún estamos en modo automático y la cámara está activa
-                            if (isCameraActive && isAutoMode && !isPressed) {
+                            // Verificar que aún estamos en modo automático (normal o temporal) y la cámara está activa
+                            const stillShouldScanNormal = isAutoMode && isCameraActive && !isPressed;
+                            const stillShouldScanTemporary = isTemporaryAutoMode && isCameraActive && isPressed;
+                            const stillShouldScan = stillShouldScanNormal || stillShouldScanTemporary;
+                            
+                            if (stillShouldScan) {
                                 scanCenterArea(true);
                             }
                         }, 2000);
@@ -1618,7 +1652,85 @@
                         autoScanIntervalRef.current = null;
                     }
                 };
-            }, [isCameraActive, isAutoMode, isPressed]);
+            }, [isCameraActive, isAutoMode, isPressed, isTemporaryAutoMode]);
+
+            // Función para resetear el timer de reposo de cámara
+            const resetCameraIdleTimer = React.useCallback(() => {
+                // Limpiar timer anterior
+                if (cameraIdleTimerRef.current) {
+                    clearInterval(cameraIdleTimerRef.current);
+                    cameraIdleTimerRef.current = null;
+                }
+                
+                // Resetear contador visual
+                setCameraIdleTime(30);
+                setIsCameraInStandby(false);
+                lastActivityTimeRef.current = Date.now();
+                
+                // Reiniciar el timer si la cámara está activa y estamos en el tab del scanner
+                if (isCameraActive && activeTab === 'scanner') {
+                    cameraIdleTimerRef.current = setInterval(() => {
+                        setCameraIdleTime(prev => {
+                            if (prev <= 1) {
+                                // Pausar cámara después de 30 segundos (NO detener stream para evitar pedir permisos)
+                                pauseCameraForStandby();
+                                setIsCameraInStandby(true);
+                                if (cameraIdleTimerRef.current) {
+                                    clearInterval(cameraIdleTimerRef.current);
+                                    cameraIdleTimerRef.current = null;
+                                }
+                                return 30;
+                            }
+                            return prev - 1;
+                        });
+                    }, 1000);
+                }
+            }, [isCameraActive, activeTab]);
+
+            // Timer de reposo de cámara - se inicializa cuando la cámara se activa
+            // El reinicio se maneja en resetCameraIdleTimer
+            React.useEffect(() => {
+                if (activeTab !== 'scanner') {
+                    if (cameraIdleTimerRef.current) {
+                        clearInterval(cameraIdleTimerRef.current);
+                        cameraIdleTimerRef.current = null;
+                    }
+                    return;
+                }
+
+                // Solo iniciar timer si la cámara está activa y no hay timer corriendo
+                if (isCameraActive && !isCameraInStandby && !cameraIdleTimerRef.current) {
+                    // Iniciar timer de reposo
+                    cameraIdleTimerRef.current = setInterval(() => {
+                        setCameraIdleTime(prev => {
+                            if (prev <= 1) {
+                                // Pausar cámara después de 30 segundos (NO detener stream para evitar pedir permisos)
+                                pauseCameraForStandby();
+                                setIsCameraInStandby(true);
+                                if (cameraIdleTimerRef.current) {
+                                    clearInterval(cameraIdleTimerRef.current);
+                                    cameraIdleTimerRef.current = null;
+                                }
+                                return 30;
+                            }
+                            return prev - 1;
+                        });
+                    }, 1000);
+                } else if (!isCameraActive || isCameraInStandby) {
+                    // Detener timer si la cámara no está activa o está en reposo
+                    if (cameraIdleTimerRef.current) {
+                        clearInterval(cameraIdleTimerRef.current);
+                        cameraIdleTimerRef.current = null;
+                    }
+                }
+
+                return () => {
+                    if (cameraIdleTimerRef.current) {
+                        clearInterval(cameraIdleTimerRef.current);
+                        cameraIdleTimerRef.current = null;
+                    }
+                };
+            }, [activeTab, isCameraActive, isCameraInStandby]);
 
             const startCamera = async () => {
                 try {
@@ -1630,12 +1742,25 @@
                     const video = videoRef.current;
                     if (!video) return;
 
-                    if (streamRef.current && streamRef.current.active) {
-                        video.srcObject = streamRef.current;
-                        await video.play();
-                        setIsCameraActive(true);
-                        checkTorchSupport();
-                        return;
+                    // Si hay un stream activo (por ejemplo, después de pausar por reposo), reutilizarlo
+                    if (streamRef.current) {
+                        // Verificar si el stream sigue activo
+                        if (streamRef.current.active) {
+                            video.srcObject = streamRef.current;
+                            await video.play();
+                            setIsCameraActive(true);
+                            setIsCameraInStandby(false);
+                            setCameraIdleTime(30); // Resetear contador
+                            cameraPermissionGrantedRef.current = true; // Guardar que se otorgaron permisos
+                            // Guardar permisos en localStorage para recordarlos permanentemente
+                            localStorage.setItem('cameraPermissionGranted', 'true');
+                            checkTorchSupport();
+                            resetCameraIdleTimer();
+                            return;
+                        } else {
+                            // Si el stream no está activo, limpiarlo para crear uno nuevo
+                            streamRef.current = null;
+                        }
                     }
 
                     // Obtener stream de la cámara con soporte para linterna
@@ -1653,8 +1778,11 @@
                     video.srcObject = stream;
                     await video.play();
                     setIsCameraActive(true);
+                    setIsCameraInStandby(false);
+                    setCameraIdleTime(30); // Resetear contador
                     cameraPermissionGrantedRef.current = true; // Guardar que se otorgaron permisos
                     checkTorchSupport();
+                    resetCameraIdleTimer();
                 } catch (error) {
                     console.error('Error accessing camera:', error);
                     if (error.name !== 'NotAllowedError' && error.name !== 'PermissionDeniedError') {
@@ -1662,6 +1790,41 @@
                     }
                 }
             };
+
+            // Listener de toques y clicks para reactivar cámara en reposo
+            React.useEffect(() => {
+                if (activeTab !== 'scanner') return;
+
+                const handleTouchOrClick = (e) => {
+                    // Evitar que se active si se está haciendo click en un botón o input
+                    const target = e.target;
+                    if (target.tagName === 'BUTTON' || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
+                        return;
+                    }
+
+                    // Si la cámara está en reposo, reactivarla
+                    if (isCameraInStandby) {
+                        e.preventDefault();
+                        startCamera();
+                        setCameraIdleTime(30);
+                    } else if (isCameraActive) {
+                        // Resetear timer de reposo al tocar/hacer click en cualquier parte
+                        setCameraIdleTime(30);
+                        resetCameraIdleTimer();
+                    }
+                };
+
+                // Agregar listeners para toques y clicks en toda la pantalla
+                document.addEventListener('touchstart', handleTouchOrClick, { passive: true });
+                document.addEventListener('mousedown', handleTouchOrClick, { passive: true });
+                document.addEventListener('click', handleTouchOrClick, { passive: true });
+
+                return () => {
+                    document.removeEventListener('touchstart', handleTouchOrClick);
+                    document.removeEventListener('mousedown', handleTouchOrClick);
+                    document.removeEventListener('click', handleTouchOrClick);
+                };
+            }, [activeTab, isCameraInStandby, isCameraActive, resetCameraIdleTimer]);
 
             const checkTorchSupport = () => {
                 if (streamRef.current && streamRef.current.getVideoTracks().length > 0) {
@@ -1687,6 +1850,38 @@
                 }
             };
 
+            // Pausar cámara para modo reposo (NO detener stream para evitar pedir permisos de nuevo)
+            const pauseCameraForStandby = () => {
+                if (videoRef.current) {
+                    videoRef.current.pause();
+                }
+                setIsCameraActive(false);
+                setIsScanning(false);
+                setIsPressed(false);
+                setIsDetecting(false);
+                setDetectedCode('');
+                setCurrentDetectedCode('');
+                setIsTemporaryAutoMode(false);
+                // NO limpiar memoria de códigos escaneados (se mantiene para cuando se reactive)
+                // NO detener el stream (mantenerlo activo para no pedir permisos de nuevo)
+                if (scanIntervalRef.current) {
+                    clearInterval(scanIntervalRef.current);
+                    scanIntervalRef.current = null;
+                }
+                if (autoScanIntervalRef.current) {
+                    clearInterval(autoScanIntervalRef.current);
+                    autoScanIntervalRef.current = null;
+                }
+                if (visualDetectionIntervalRef.current) {
+                    clearInterval(visualDetectionIntervalRef.current);
+                    visualDetectionIntervalRef.current = null;
+                }
+                if (cameraIdleTimerRef.current) {
+                    clearInterval(cameraIdleTimerRef.current);
+                    cameraIdleTimerRef.current = null;
+                }
+            };
+
             const stopCamera = () => {
                 if (streamRef.current) {
                     streamRef.current.getTracks().forEach(track => track.stop());
@@ -1703,7 +1898,8 @@
                 setCurrentDetectedCode('');
                 setIsTorchOn(false);
                 hasScannedRef.current = false;
-                // Limpiar memoria de códigos escaneados al detener la cámara
+                setIsTemporaryAutoMode(false);
+                // Limpiar memoria de códigos escaneados al detener la cámara completamente
                 scannedCodesMemoryRef.current.clear();
                 if (scanIntervalRef.current) {
                     clearInterval(scanIntervalRef.current);
@@ -1716,6 +1912,10 @@
                 if (visualDetectionIntervalRef.current) {
                     clearInterval(visualDetectionIntervalRef.current);
                     visualDetectionIntervalRef.current = null;
+                }
+                if (cameraIdleTimerRef.current) {
+                    clearInterval(cameraIdleTimerRef.current);
+                    cameraIdleTimerRef.current = null;
                 }
             };
 
@@ -1843,8 +2043,11 @@
             const scanCenterArea = async (isAuto = false) => {
                 if (!isCameraActive || !videoRef.current || !codeReaderRef.current) return;
                 
-                // En modo manual, no escanear si ya está escaneando
-                if (isScanningActiveRef.current && !isAuto) return;
+                // En modo manual, no escanear si ya está escaneando o ya se escaneó
+                if (!isAuto) {
+                    if (isScanningActiveRef.current) return;
+                    if (hasScannedRef.current) return;
+                }
                 
                 // En modo automático, permitir escanear incluso si está activo (pero con un pequeño delay)
                 // Esto permite escaneo continuo más rápido
@@ -1853,9 +2056,6 @@
                     // Permitir que el escaneo actual termine
                     return;
                 }
-                
-                // En modo manual, no escanear si ya se escaneó
-                if (hasScannedRef.current && !isAuto) return;
 
                 isScanningActiveRef.current = true;
                 
@@ -1933,10 +2133,10 @@
                             // Si es un código nuevo, agregarlo a la memoria
                             scannedCodesMemoryRef.current.add(code);
                             
-                            // Limpiar códigos antiguos después de 30 segundos (evitar que la memoria crezca indefinidamente)
+                            // Limpiar códigos antiguos después de 2 segundos (permitir escanear el mismo código después de 2 segundos)
                             setTimeout(() => {
                                 scannedCodesMemoryRef.current.delete(code);
-                            }, 30000);
+                            }, 2000);
                         }
                         
                         // En modo manual, verificar si es el mismo código que se acaba de escanear
@@ -1985,39 +2185,41 @@
             };
 
             const handlePressStart = () => {
-                if (!isCameraActive) {
+                // Reactivar cámara si está en reposo
+                if (isCameraInStandby) {
                     startCamera();
+                    setCameraIdleTime(30); // Resetear contador visual
+                    resetCameraIdleTimer();
                     return;
                 }
                 
+                if (!isCameraActive) {
+                    startCamera();
+                    setCameraIdleTime(30); // Resetear contador visual
+                    resetCameraIdleTimer();
+                    return;
+                }
+                
+                // Resetear timer de reposo al tocar/presionar (SIEMPRE resetear)
+                setCameraIdleTime(30); // Resetear contador visual
+                resetCameraIdleTimer();
+                
                 if (!isAutoMode) {
+                    // Activar modo automático temporal mientras se mantiene presionado
                     setIsPressed(true);
+                    setIsTemporaryAutoMode(true);
                     hasScannedRef.current = false;
                     setIsScanning(true);
-                    // Si hay un código detectado visualmente, capturarlo
-                    if (currentDetectedCode) {
-                        const code = currentDetectedCode;
-                        setScannedCode(code);
-                        setLastScannedCode(code);
-                        playBeep();
-                        vibrate();
-                        hasScannedRef.current = true;
-                        setIsScanning(false);
-                        
-                        // Buscar en base de datos
-                        if (onCodeScanned) {
-                            onCodeScanned(code);
-                        }
-                    } else {
-                        // Intentar escanear si no hay código detectado
-                        scanCenterArea(false);
-                    }
+                    // Iniciar escaneo automático inmediatamente
+                    scanCenterArea(true);
                 }
             };
 
             const handlePressEnd = () => {
                 if (!isAutoMode) {
+                    // Desactivar modo automático temporal al soltar
                     setIsPressed(false);
+                    setIsTemporaryAutoMode(false);
                     setIsScanning(false);
                     hasScannedRef.current = false;
                 }
@@ -2042,14 +2244,14 @@
                 const hiddenInput = hiddenScannerInputRef.current;
                 if (!visibleInput || !hiddenInput) return;
 
-                // Función para activar el input invisible (cuando el visible no está enfocado)
+                // Función para activar el input invisible (cuando el visible no está enfocado Y el modal NO está abierto)
                 const activateHiddenInput = () => {
-                    if (!isManualInputFocused && hiddenInput && document.activeElement !== hiddenInput) {
+                    if (!isManualInputFocused && !isScannerModalOpen && hiddenInput && document.activeElement !== hiddenInput) {
                         hiddenInput.focus();
                     }
                 };
 
-                // Función para desactivar el input invisible (cuando el visible está enfocado)
+                // Función para desactivar el input invisible (cuando el visible está enfocado O el modal está abierto)
                 const deactivateHiddenInput = () => {
                     if (hiddenInput && document.activeElement === hiddenInput) {
                         hiddenInput.blur();
@@ -2085,20 +2287,23 @@
                     }
                 };
 
-                // Activar el input invisible al inicio si el visible no está enfocado
-                if (!isManualInputFocused) {
+                // Activar el input invisible al inicio si el visible no está enfocado Y el modal NO está abierto
+                if (!isManualInputFocused && !isScannerModalOpen) {
                     activateHiddenInput();
                 }
 
-                // Verificar periódicamente que el input invisible esté activo si el visible no está enfocado
+                // Verificar periódicamente que el input invisible esté activo si el visible no está enfocado Y el modal NO está abierto
                 const focusCheckInterval = setInterval(() => {
                     if (activeTab === 'scanner') {
                         const visibleInputFocused = document.activeElement === visibleInput;
                         const hiddenInputFocused = document.activeElement === hiddenInput;
                         
-                        // Si el visible no está enfocado y el invisible tampoco, activar el invisible
-                        if (!visibleInputFocused && !hiddenInputFocused) {
+                        // Si el visible no está enfocado, el invisible tampoco, Y el modal NO está abierto, activar el invisible
+                        if (!visibleInputFocused && !hiddenInputFocused && !isScannerModalOpen) {
                             activateHiddenInput();
+                        } else if (isScannerModalOpen && hiddenInputFocused) {
+                            // Si el modal está abierto, desactivar el input invisible
+                            deactivateHiddenInput();
                         }
                     }
                 }, 500);
@@ -2113,15 +2318,15 @@
                     visibleInput.removeEventListener('blur', handleVisibleBlur);
                     document.removeEventListener('click', handleClickOutside);
                 };
-            }, [activeTab, isManualInputFocused]);
+            }, [activeTab, isManualInputFocused, isScannerModalOpen]);
 
             // Detectar pistola escáner HID en el input INVISIBLE (siempre activo para pistola escáner)
             React.useEffect(() => {
                 const hiddenInput = hiddenScannerInputRef.current;
                 if (!hiddenInput || activeTab !== 'scanner') return;
                 
-                // Solo procesar si el input visible NO está enfocado
-                if (isManualInputFocused) return;
+                // Solo procesar si el input visible NO está enfocado Y el modal NO está abierto
+                if (isManualInputFocused || isScannerModalOpen) return;
 
                 // Limpiar timeout anterior si existe
                 const clearScannerTimeout = () => {
@@ -2241,7 +2446,20 @@
                     hiddenInput.removeEventListener('keydown', handleKeyDown);
                     clearScannerTimeout();
                 };
-            }, [activeTab, isManualInputFocused, onCodeScanned]);
+            }, [activeTab, isManualInputFocused, isScannerModalOpen, onCodeScanned]);
+            
+            // Desactivar input invisible cuando se abre el modal del escáner
+            React.useEffect(() => {
+                if (isScannerModalOpen) {
+                    const hiddenInput = hiddenScannerInputRef.current;
+                    if (hiddenInput && document.activeElement === hiddenInput) {
+                        hiddenInput.blur();
+                        // Limpiar cualquier valor en el input invisible
+                        setHiddenScannerCode('');
+                        scannerBufferRef.current = '';
+                    }
+                }
+            }, [isScannerModalOpen]);
             
             // Manejar entrada manual en el input VISIBLE (teclado físico o virtual)
             // Este input solo es para entrada manual del usuario, no para pistola escáner
@@ -2256,9 +2474,72 @@
                 scannedCodesMemoryRef.current.clear();
             };
 
+            // Referencia al contenedor principal del scanner
+            const scannerContainerRef = React.useRef(null);
+
             return (
-                <div className="h-full flex flex-col bg-black relative">
-                    {/* Input invisible para pistola escáner HID (siempre activo cuando el visible no está enfocado) */}
+                <div 
+                    ref={scannerContainerRef}
+                    className="h-full flex flex-col bg-black relative"
+                    onClick={(e) => {
+                        // Evitar resetear si se hace click en un botón o input
+                        const target = e.target;
+                        if (target.tagName === 'BUTTON' || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
+                            return;
+                        }
+                        
+                        // Si la cámara está en reposo, reactivarla al hacer click
+                        if (isCameraInStandby) {
+                            e.preventDefault();
+                            startCamera();
+                            setCameraIdleTime(30); // Resetear contador visual
+                            resetCameraIdleTimer();
+                        } else if (isCameraActive) {
+                            // SIEMPRE resetear timer al hacer click en cualquier parte
+                            setCameraIdleTime(30); // Resetear contador visual
+                            resetCameraIdleTimer();
+                        }
+                    }}
+                    onTouchStart={(e) => {
+                        // Evitar resetear si se toca un botón o input
+                        const target = e.target;
+                        if (target.tagName === 'BUTTON' || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
+                            return;
+                        }
+                        
+                        // Si la cámara está en reposo, reactivarla al tocar
+                        if (isCameraInStandby) {
+                            e.preventDefault();
+                            startCamera();
+                            setCameraIdleTime(30); // Resetear contador visual
+                            resetCameraIdleTimer();
+                        } else if (isCameraActive) {
+                            // SIEMPRE resetear timer al tocar en cualquier parte
+                            setCameraIdleTime(30); // Resetear contador visual
+                            resetCameraIdleTimer();
+                        }
+                    }}
+                    onMouseDown={(e) => {
+                        // Evitar resetear si se hace click en un botón o input
+                        const target = e.target;
+                        if (target.tagName === 'BUTTON' || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
+                            return;
+                        }
+                        
+                        // Si la cámara está en reposo, reactivarla al presionar
+                        if (isCameraInStandby) {
+                            e.preventDefault();
+                            startCamera();
+                            setCameraIdleTime(30); // Resetear contador visual
+                            resetCameraIdleTimer();
+                        } else if (isCameraActive) {
+                            // SIEMPRE resetear timer al presionar en cualquier parte
+                            setCameraIdleTime(30); // Resetear contador visual
+                            resetCameraIdleTimer();
+                        }
+                    }}
+                >
+                    {/* Input invisible para pistola escáner HID (siempre activo cuando el visible no está enfocado Y el modal NO está abierto) */}
                     {activeTab === 'scanner' && (
                         <input
                             ref={hiddenScannerInputRef}
@@ -2271,10 +2552,10 @@
                                 width: '1px',
                                 height: '1px',
                                 left: '-9999px',
-                                pointerEvents: isManualInputFocused ? 'none' : 'auto',
+                                pointerEvents: (isManualInputFocused || isScannerModalOpen) ? 'none' : 'auto',
                                 zIndex: -1
                             }}
-                            tabIndex={isManualInputFocused ? -1 : 0}
+                            tabIndex={(isManualInputFocused || isScannerModalOpen) ? -1 : 0}
                             autoComplete="off"
                             spellCheck="false"
                             inputMode="none"
@@ -2309,6 +2590,28 @@
                                     {isTorchOn ? '💡 ON' : '💡 OFF'}
                                 </button>
                             )}
+                            
+                            {/* Cronómetro de reposo de cámara */}
+                            <div className={`px-4 py-2 rounded-lg font-bold text-sm shadow-lg transition-all ${
+                                cameraIdleTime <= 10 
+                                    ? 'bg-red-600 text-white animate-pulse' 
+                                    : cameraIdleTime <= 20
+                                    ? 'bg-orange-500 text-white'
+                                    : 'bg-white/20 text-white backdrop-blur-sm'
+                            }`}>
+                                ⏱️ {cameraIdleTime}s
+                            </div>
+                        </div>
+                    )}
+                    
+                    {/* Indicador de cámara en reposo */}
+                    {isCameraInStandby && (
+                        <div className="absolute inset-0 z-40 bg-black/80 flex items-center justify-center">
+                            <div className="text-center text-white">
+                                <div className="text-6xl mb-4">📷</div>
+                                <div className="text-2xl font-bold mb-2">Cámara en reposo</div>
+                                <div className="text-lg opacity-75">Toca la pantalla para reactivar</div>
+                            </div>
                         </div>
                     )}
 
@@ -2368,11 +2671,51 @@
                         {/* Área para modo manual - siempre activa para tocar */}
                         <div
                             className="absolute inset-0 z-20 touch-none"
-                            onTouchStart={handlePressStart}
+                            onTouchStart={(e) => {
+                                // Si la cámara está en reposo, reactivarla primero
+                                if (isCameraInStandby) {
+                                    e.preventDefault();
+                                    startCamera();
+                                    setCameraIdleTime(30);
+                                    return;
+                                }
+                                // Resetear timer al tocar
+                                if (isCameraActive) {
+                                    setCameraIdleTime(30);
+                                    resetCameraIdleTimer();
+                                }
+                                handlePressStart();
+                            }}
                             onTouchEnd={handlePressEnd}
-                            onMouseDown={handlePressStart}
+                            onMouseDown={(e) => {
+                                // Si la cámara está en reposo, reactivarla primero
+                                if (isCameraInStandby) {
+                                    e.preventDefault();
+                                    startCamera();
+                                    setCameraIdleTime(30);
+                                    return;
+                                }
+                                // Resetear timer al hacer click
+                                if (isCameraActive) {
+                                    setCameraIdleTime(30);
+                                    resetCameraIdleTimer();
+                                }
+                                handlePressStart();
+                            }}
                             onMouseUp={handlePressEnd}
                             onMouseLeave={handlePressEnd}
+                            onClick={(e) => {
+                                // Si la cámara está en reposo, reactivarla
+                                if (isCameraInStandby) {
+                                    e.preventDefault();
+                                    startCamera();
+                                    setCameraIdleTime(30);
+                                } else if (isCameraActive) {
+                                    // Resetear timer al hacer click
+                                    setCameraIdleTime(30);
+                                    resetCameraIdleTimer();
+                                }
+                            }}
                             style={{ 
                                 backgroundColor: isPressed ? 'rgba(239, 68, 68, 0.1)' : 'transparent',
                                 cursor: 'pointer',
@@ -4809,7 +5152,7 @@
                         </div>
 
                         <div className={`h-full overflow-hidden relative ${activeTab === 'scanner' ? 'block' : 'hidden'}`}>
-                            <ScannerComponent activeTab={activeTab} onCodeScanned={handleCodeScanned} />
+                            <ScannerComponent activeTab={activeTab} onCodeScanned={handleCodeScanned} isScannerModalOpen={isScannerModalOpen} />
                         </div>
                         
                         {isDebugMode && <DebugConsole logs={logs} />}
